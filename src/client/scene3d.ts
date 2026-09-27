@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 
 /**
  * スタート画面の3D背景。外部モデルは使わず、駒も手もコードで生成する。
@@ -88,7 +89,7 @@ function buildPiece(type: PieceType, mat: THREE.Material): THREE.Group {
 /** 手が駒をつまむ高さ(駒の底からの高さ) */
 const GRIP_Y: Record<PieceType, number> = { p: 0.6, r: 0.75, n: 0.85, b: 0.72, q: 0.85, k: 0.85 };
 /** つまんだ時の指先の間隔(駒の厚み + 指の太さ) */
-const CLOSED_GAP: Record<PieceType, number> = { p: 0.46, r: 0.6, n: 0.46, b: 0.42, q: 0.5, k: 0.5 };
+const CLOSED_GAP: Record<PieceType, number> = { p: 0.5, r: 0.66, n: 0.52, b: 0.46, q: 0.56, k: 0.56 };
 
 // ---------- 手 ----------
 class Seg {
@@ -123,73 +124,105 @@ function solveTwoBone(root: THREE.Vector3, target: THREE.Vector3, a: number, b: 
   outTip.copy(root).addScaledVector(dir, dist);
 }
 
-interface Finger {
-  root: THREE.Vector3; a: number; b: number; pole: THREE.Vector3;
-  s1: Seg; s2: Seg; joints: THREE.Mesh[];
-  mid: THREE.Vector3; tip: THREE.Vector3;
+/** 関節の点列を、円柱(先細り)と関節の球でつなぐ */
+class Limb {
+  private segs: Seg[] = [];
+  private joints: THREE.Mesh[] = [];
+  constructor(radii: number[], mat: THREE.Material, parent: THREE.Object3D) {
+    radii.forEach((r, i) => {
+      const j = new THREE.Mesh(new THREE.SphereGeometry(r, 22, 16), mat);
+      j.castShadow = true; parent.add(j); this.joints.push(j);
+      if (i < radii.length - 1) { const sg = new Seg(r, radii[i + 1], mat); parent.add(sg.mesh); this.segs.push(sg); }
+    });
+  }
+  set(points: THREE.Vector3[]) {
+    points.forEach((p, i) => this.joints[i].position.copy(p));
+    this.segs.forEach((sg, i) => sg.set(points[i], points[i + 1]));
+  }
+}
+
+/** 指先の爪: 指の向き(dir)に沿わせ、面が out の向きを向くように置く */
+function placeNail(nail: THREE.Mesh, tip: THREE.Vector3, dir: THREE.Vector3, out: THREE.Vector3, r: number) {
+  const y = dir.clone().normalize();
+  const z = out.clone().addScaledVector(y, -out.dot(y)).normalize();
+  const x = new THREE.Vector3().crossVectors(y, z);
+  nail.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+  nail.position.copy(tip).addScaledVector(y, -0.075).addScaledVector(z, r * 0.78);
 }
 
 const HAND_YAW = -0.5;                  // 手を少し斜めに向けて、つまむ2本の指がカメラから見えるようにする
-const HAND_H = 1.7;                    // 手のひらの中心から指先(つまむ点)までの縦の距離
-const GRIP_LOCAL = new THREE.Vector3(0, -HAND_H, 0.02);
+const HAND_H = 1.35;                    // 手のひらの中心から、つまむ点までの縦の距離
+const GRIP_LOCAL = new THREE.Vector3(-0.42, -HAND_H, 0.18);   // つまむ点(手のひらの前、親指と人差し指の間)
+
+interface Digit { root: THREE.Vector3; len: number[]; pole: THREE.Vector3; dir: THREE.Vector3; limb: Limb; nail: THREE.Mesh }
 
 class Hand {
   readonly group = new THREE.Group();
-  private fingers: Finger[] = [];
-  private index!: Finger;
-  private thumb!: Finger;
+  private index: Digit;
+  private thumb: Digit;
+  private readonly tmp = { mid: new THREE.Vector3(), j2: new THREE.Vector3(), tip: new THREE.Vector3(), t: new THREE.Vector3() };
 
-  constructor(skin: THREE.Material, cuff: THREE.Material) {
-    const palm = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), skin);
-    palm.scale.set(0.5, 0.58, 0.2); palm.castShadow = true;
-    this.group.add(palm);
+  constructor(skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material) {
+    const g = this.group;
+    const mesh = (geo: THREE.BufferGeometry, m: THREE.Material) => { const o = new THREE.Mesh(geo, m); o.castShadow = true; g.add(o); return o; };
 
-    // 前腕と袖口
-    const arm = new Seg(0.3, 0.38, skin);
-    arm.set(new THREE.Vector3(0, 0.35, -0.02), new THREE.Vector3(0.6, 4.6, 1.5));
-    this.group.add(arm.mesh);
-    const cuffMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.44, 0.34, 32), cuff);
-    const c0 = new THREE.Vector3(0.09, 0.85, 0.14), dir = new THREE.Vector3(0.6, 4.25, 1.52).normalize();
-    cuffMesh.position.copy(c0); cuffMesh.quaternion.setFromUnitVectors(UP, dir);
-    this.group.add(cuffMesh);
+    // 手のひら(角の丸い板)と、親指の付け根のふくらみ(母指球)、手首
+    mesh(new RoundedBoxGeometry(0.96, 1.06, 0.34, 6, 0.15), skin).position.set(-0.02, 0, 0);
+    const thenar = mesh(new THREE.SphereGeometry(1, 28, 20), skin);
+    thenar.scale.set(0.3, 0.5, 0.21); thenar.position.set(-0.42, 0.02, 0.1); thenar.rotation.z = 0.25;
+    const wrist = new Seg(0.3, 0.27, skin); wrist.set(new THREE.Vector3(0, 0.3, 0), new THREE.Vector3(0.05, 0.75, -0.04)); g.add(wrist.mesh);
 
-    // 人差し指と親指(つまむ2本)
-    this.index = this.makeFinger(new THREE.Vector3(0.28, -0.55, 0.05), 0.72, 0.6, new THREE.Vector3(0.5, 0, 0.9), 0.115, skin);
-    this.thumb = this.makeFinger(new THREE.Vector3(-0.34, -0.55, 0.1), 0.72, 0.56, new THREE.Vector3(-0.5, 0, 0.9), 0.125, skin);
-    // 残りの3本は手の甲側に折り込む
-    const curled: [number, number, number][] = [[0.1, -0.55, -0.12], [-0.08, -0.5, -0.2], [-0.24, -0.42, -0.26]];
-    for (const [x, y, z] of curled) {
-      const f = this.makeFinger(new THREE.Vector3(x, y, z), 0.36, 0.3, new THREE.Vector3(0, 0.3, -1), 0.1, skin);
-      solveTwoBone(f.root, f.root.clone().add(new THREE.Vector3(0.02, -0.34, -0.2)), f.a, f.b, f.pole, f.mid, f.tip);
-      this.applyFinger(f);
+    // 前腕(斜め上へ伸びて画面の外へ)と袖口
+    const armDir = new THREE.Vector3(0.3, 1, -0.25).normalize();
+    const arm = new Seg(0.27, 0.4, skin); arm.set(new THREE.Vector3(0.05, 0.7, -0.04), new THREE.Vector3(0.05, 0.7, -0.04).addScaledVector(armDir, 5)); g.add(arm.mesh);
+    const cuffMesh = mesh(new THREE.CylinderGeometry(0.44, 0.47, 0.42, 36), cuff);
+    cuffMesh.position.set(0.05, 0.7, -0.04).addScaledVector(armDir, 0.85); cuffMesh.quaternion.setFromUnitVectors(UP, armDir);
+
+    // 人差し指(3関節) と 親指(中手骨 + 2関節)。指先の向きを先に決めて、そこから逆算して関節を曲げる
+    const nail = () => { const n = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), nailMat); n.scale.set(0.068, 0.105, 0.03); g.add(n); return n; };
+    this.index = { root: new THREE.Vector3(-0.25, -0.5, 0.06), len: [0.46, 0.34, 0.26], pole: new THREE.Vector3(0.8, 0, -0.3),
+      dir: new THREE.Vector3(-0.45, -0.85, 0.15).normalize(), limb: new Limb([0.105, 0.092, 0.08, 0.068], skin, g), nail: nail() };
+    this.thumb = { root: new THREE.Vector3(-0.6, -0.5, 0.14), len: [0.5, 0.42], pole: new THREE.Vector3(-0.8, 0, -0.2),
+      dir: new THREE.Vector3(0.5, -0.8, 0.25).normalize(), limb: new Limb([0.125, 0.105, 0.09], skin, g), nail: nail() };
+    new Limb([0.14, 0.125], skin, g).set([new THREE.Vector3(-0.3, 0.32, 0.05), this.thumb.root]);   // 親指の中手骨
+
+    // 残りの3本(中指・薬指・小指)は、手のひら側に握り込む(順運動学で3関節を曲げる)
+    const curled: { x: number; y: number; len: number[]; r: number[] }[] = [
+      { x: -0.03, y: -0.53, len: [0.5, 0.35, 0.27], r: [0.104, 0.092, 0.08, 0.067] },
+      { x: 0.19, y: -0.5, len: [0.46, 0.32, 0.25], r: [0.098, 0.086, 0.075, 0.063] },
+      { x: 0.39, y: -0.42, len: [0.37, 0.25, 0.22], r: [0.085, 0.075, 0.065, 0.055] },
+    ];
+    for (const f of curled) {
+      let ang = 0; const pts = [new THREE.Vector3(f.x, f.y, 0.06)];
+      [1.2, 1.45, 0.9].forEach((flex, i) => {
+        ang += flex;                                              // 手のひら側(+Z)へ曲げる
+        pts.push(pts[i].clone().add(new THREE.Vector3(0, -Math.cos(ang), Math.sin(ang)).multiplyScalar(f.len[i])));
+      });
+      new Limb(f.r, skin, g).set(pts);
+      const n = nail(); const d = pts[3].clone().sub(pts[2]).normalize();
+      placeNail(n, pts[3], d, new THREE.Vector3(0, 0.6, -0.8), f.r[3]);
     }
   }
 
-  private makeFinger(root: THREE.Vector3, a: number, b: number, pole: THREE.Vector3, r: number, mat: THREE.Material): Finger {
-    const s1 = new Seg(r * 1.15, r, mat), s2 = new Seg(r, r * 0.8, mat);
-    const joints = [r * 1.15, r, r * 0.8].map((jr) => {
-      const m = new THREE.Mesh(new THREE.SphereGeometry(jr, 16, 12), mat);
-      m.castShadow = true;
-      return m;
-    });
-    this.group.add(s1.mesh, s2.mesh, ...joints);
-    const f: Finger = { root, a, b, pole, s1, s2, joints, mid: new THREE.Vector3(), tip: new THREE.Vector3() };
-    this.fingers.push(f);
-    return f;
-  }
-
-  private applyFinger(f: Finger) {
-    f.s1.set(f.root, f.mid); f.s2.set(f.mid, f.tip);
-    f.joints[0].position.copy(f.root); f.joints[1].position.copy(f.mid); f.joints[2].position.copy(f.tip);
-  }
-
-  /** gap: 親指と人差し指の指先の間隔。指先をつまむ点の左右に置いてIKで関節を決める */
+  /** gap: 親指と人差し指の指先の間隔。指先をつまむ点の左右に置き、IKで関節を決める */
   pose(gap: number) {
-    const t = new THREE.Vector3();
-    solveTwoBone(this.index.root, t.copy(GRIP_LOCAL).add(new THREE.Vector3(gap / 2, 0, 0)), this.index.a, this.index.b, this.index.pole, this.index.mid, this.index.tip);
-    this.applyFinger(this.index);
-    solveTwoBone(this.thumb.root, t.copy(GRIP_LOCAL).add(new THREE.Vector3(-gap / 2, 0, 0)), this.thumb.a, this.thumb.b, this.thumb.pole, this.thumb.mid, this.thumb.tip);
-    this.applyFinger(this.thumb);
+    const { mid, j2, tip, t } = this.tmp;
+
+    // 人差し指: 指先(=つまむ点の右)から、指先の向きぶん戻した位置(遠位関節)を2ボーンIKで解く
+    const ix = this.index;
+    t.copy(GRIP_LOCAL).add(new THREE.Vector3(gap / 2, 0, 0));
+    const target = t.clone().addScaledVector(ix.dir, -ix.len[2]);
+    solveTwoBone(ix.root, target, ix.len[0], ix.len[1], ix.pole, mid, j2);
+    tip.copy(j2).addScaledVector(ix.dir, ix.len[2]);
+    ix.limb.set([ix.root, mid, j2, tip]);
+    placeNail(ix.nail, tip, ix.dir, new THREE.Vector3(0.9, 0.2, -0.3), 0.068);
+
+    // 親指: 中手骨は固定で、2関節を直接IKで解く
+    const th = this.thumb;
+    t.copy(GRIP_LOCAL).add(new THREE.Vector3(-gap / 2, 0, 0));
+    solveTwoBone(th.root, t, th.len[0], th.len[1], th.pole, mid, tip);
+    th.limb.set([th.root, mid, tip]);
+    placeNail(th.nail, tip, tip.clone().sub(mid), new THREE.Vector3(-0.9, 0.2, -0.3), 0.09);
   }
 }
 
@@ -202,7 +235,7 @@ const PHASES: [string, number][] = [
   ["carry", 1.25], ["lower", 0.5], ["release", 0.4], ["retreat", 0.9],
 ];
 const CYCLE = PHASES.reduce((s, [, d]) => s + d, 0);
-const OPEN_GAP = 1.35;
+const OPEN_GAP = 1.2;
 
 const ease = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
 const sq = (file: number, rank: number) => new THREE.Vector3(file - 3.5, 0, 4.5 - rank);   // file 0..7 (a-h), rank 1..8
@@ -212,7 +245,7 @@ export class StartScene {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(40, 1, 0.1, 80);
   private hand: Hand;
-  private handLight = new THREE.PointLight(0x66ccff, 26, 9, 1.6);
+  private handLight = new THREE.PointLight(0x9fd8ff, 9, 8, 1.8);
   private flash: THREE.Mesh;
   private steps: Step[] = [];
   private giants: { a: Actor; side: number; k: number }[] = [];
@@ -248,9 +281,10 @@ export class StartScene {
     this.buildBoard();
     const actors = this.buildPieces(ivory, navy);
 
-    const skin = new THREE.MeshStandardMaterial({ color: 0xeef1f8, roughness: 0.42, metalness: 0.08, emissive: 0x0a1830, emissiveIntensity: 0.5 });
+    const skin = new THREE.MeshPhysicalMaterial({ color: 0xd49a7c, roughness: 0.62, metalness: 0, sheen: 0.6, sheenColor: new THREE.Color(0xff9d7e), sheenRoughness: 0.55, emissive: 0x1e0a04, emissiveIntensity: 0.3 });
+    const nailMat = new THREE.MeshStandardMaterial({ color: 0xf0c9bb, roughness: 0.22, metalness: 0.05 });
     const cuff = new THREE.MeshStandardMaterial({ color: 0x1b2a44, roughness: 0.4, metalness: 0.3, emissive: 0x66ccff, emissiveIntensity: 0.55 });
-    this.hand = new Hand(skin, cuff);
+    this.hand = new Hand(skin, nailMat, cuff);
     this.hand.group.rotation.y = HAND_YAW;
     this.scene.add(this.hand.group, this.handLight);
 
@@ -441,7 +475,8 @@ export class StartScene {
 
     // 手のひらは、つまむ点の真上。少しだけ揺らす
     const t = performance.now() / 1000;
-    this.hand.group.position.set(grip.x - GRIP_LOCAL.x, grip.y - GRIP_LOCAL.y + Math.sin(t * 2) * 0.03, grip.z - GRIP_LOCAL.z);
+    const off = GRIP_LOCAL.clone().applyAxisAngle(UP, HAND_YAW);            // つまむ点のワールドでの手のひらからのずれ
+    this.hand.group.position.set(grip.x - off.x, grip.y - off.y + Math.sin(t * 2) * 0.03, grip.z - off.z);
     this.hand.pose(gap);
     this.handLight.position.set(grip.x + 0.4, grip.y + 0.8, grip.z + 1.6);
   }
