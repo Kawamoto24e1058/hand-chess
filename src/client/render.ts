@@ -1,7 +1,7 @@
 import type { Game } from "./game";
 import { toScreen } from "./hand";
 import { glyphOf, sqName } from "./pieces";
-import { PIECE_INFO, reasonText, resultTitle } from "./text";
+import { reasonText, resultTitle } from "./text";
 import { S, SQ } from "./projection";
 import type { Color } from "../shared/protocol";
 
@@ -156,7 +156,7 @@ const roundRect = (ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 };
 
-/** カーソルの近くに、つまむ進み具合と、指している駒/掴んでいる駒の名前・動き方を出す */
+/** カーソルのまわりに、つまむ進み具合の円だけを出す(説明の文字は出さない) */
 function drawCursorHelp(ctx: CanvasRenderingContext2D, g: Game) {
   const cur = g.cursor;
   if (!cur || g.result) return;
@@ -170,36 +170,6 @@ function drawCursorHelp(ctx: CanvasRenderingContext2D, g: Game) {
     ctx.beginPath(); ctx.arc(q.x, q.y, 24, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * prog); ctx.stroke(); ctx.lineCap = "butt";
   }
 
-  // 名前と動き方のふきだし
-  let title = "", sub = "", tone = "#6cf";
-  if (held) {
-    const info = PIECE_INFO[held.type], snap = g.snapTarget(cur), legal = !!snap && held.targets.has(snap);
-    title = `${info.name}を持っています` + (legal ? `  →  ${snap}${held.captures.has(snap!) ? "(取る!)" : ""}` : "");
-    sub = legal ? "指を開くと、ここに置きます" : "緑の丸=行ける場所 / 赤=取れる駒";
-    tone = legal ? "#7dffa0" : "#fc6";
-  } else if (hov) {
-    const info = PIECE_INFO[hov.type];
-    const mine = g.myColor ? hov.color === g.myColor : true;
-    title = `${mine ? "" : "相手の"}${info.name}`;
-    sub = hov.movable ? `${info.move}\nつまむと掴めます` : mine ? `${info.move}\n今は動かせません` : info.move;
-    tone = hov.movable ? "#6cf" : "#9aa5bd";
-  } else return;
-
-  const lines = [title, ...sub.split("\n")];
-  ctx.font = "bold 15px sans-serif";
-  const w = Math.max(...lines.map((l, i) => { ctx.font = i === 0 ? "bold 15px sans-serif" : "12px sans-serif"; return ctx.measureText(l).width; })) + 20;
-  const h = 14 + lines.length * 19;
-  let x = q.x + 30, y = q.y - h - 18;
-  if (x + w > S - 6) x = q.x - w - 30;
-  if (y < 6) y = q.y + 30;
-  ctx.fillStyle = "rgba(10,13,20,.9)"; ctx.strokeStyle = tone; ctx.lineWidth = 1.5;
-  roundRect(ctx, x, y, w, h, 9); ctx.fill(); ctx.stroke();
-  ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  lines.forEach((l, i) => {
-    ctx.font = i === 0 ? "bold 15px sans-serif" : "12px sans-serif";
-    ctx.fillStyle = i === 0 ? tone : "#cfd6e6";
-    ctx.fillText(l, x + 10, y + 16 + i * 19);
-  });
 }
 
 /** LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄) */
