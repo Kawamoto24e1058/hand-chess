@@ -71,7 +71,7 @@ export class Game {
    * 「手をその位置に持っていくと、そこに置ける」という、実際に盤に触れているような対応になる。
    */
   boardMap: BoardMap | null = store.get<BoardMap | null>("boardMap", null);
-  mapOn = store.get<boolean>("mapOn", true);
+  mapOn = store.get<boolean>("mapOn2", false);                          // 実験機能: 位置合わせをしても、切り替えるまでは使わない
   mapInfo: { tilt: number; err: number } | null = store.get("mapInfo", null);
   cal: { step: number; samples: CalSample[] } | null = null;              // キャリブレーション中(盤の四隅と中央を、順につまんで示す)
   private turnLockUntil = 0;             // 盤を回している間は、駒を掴めないようにする
@@ -140,7 +140,7 @@ export class Game {
     if (!map) { this.onToast?.("うまく計算できませんでした。もう一度どうぞ", 4000); return; }
     const err = fitError(map, cal.samples), tilt = tiltDegrees(map);
     this.boardMap = map; this.mapOn = true; this.mapInfo = { tilt, err };
-    store.set("boardMap", map); store.set("mapOn", true); store.set("mapInfo", this.mapInfo);
+    store.set("boardMap", map); store.set("mapOn2", true); store.set("mapInfo", this.mapInfo);
     sfx.win();
     this.onToast?.(`位置合わせが完了しました(手の動く面の傾き 約${Math.round(tilt)}°、誤差 約${Math.round(err)}px)`, 5000);
   }

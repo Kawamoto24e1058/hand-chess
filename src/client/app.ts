@@ -54,7 +54,7 @@ export class App {
     audioState.enabled = store.get("sound", true);
     this.view.target = store.get("view3d", true) ? 0.52 : 0;
 
-    this.game.depthMode = store.get("depth", true);
+    this.game.depthMode = store.get("depth2", false);      // 実験機能: 初期はOFF
     this.wireStart(); this.wireGame(); this.wireModal(); this.wireKeys();
     this.handleInviteLink();
     this.show(this.hasInvite() ? "start" : "title");
@@ -256,9 +256,9 @@ export class App {
     };
     $("toolMap").onclick = () => {
       if (!this.game.boardMap) return this.toast("先に「盤の位置合わせ(四隅)」をしてください", 3500);
-      this.game.mapOn = !this.game.mapOn; store.set("mapOn", this.game.mapOn);
+      this.game.mapOn = !this.game.mapOn; store.set("mapOn2", this.game.mapOn);
     };
-    $("toolDepth").onclick = () => { this.game.depthMode = !this.game.depthMode; store.set("depth", this.game.depthMode); };
+    $("toolDepth").onclick = () => { this.game.depthMode = !this.game.depthMode; store.set("depth2", this.game.depthMode); };
     $("toolRelock").onclick = () => { this.input.releaseLock(); this.toast("いちばん近くの手を追従し直します", 2200); };
     $("toolHints").onclick = () => { this.hints = !this.hints; store.set("hints", this.hints); };
     // 駒ガイド(6種類の名前と動き方)
@@ -356,8 +356,8 @@ export class App {
     // ツールの表示
     setText($("toolSound"), `効果音: ${audioState.enabled ? "ON" : "OFF"}`);
     setText($("toolCam"), `カメラ: ${inp.cameraState === "off" ? "OFF" : "ON"}`);
-    setText($("toolMap"), `実位置: ${!g.boardMap ? "未設定" : g.mapOn ? "ON" : "OFF"}`);
-    setText($("toolDepth"), `奥行き操作: ${g.depthMode ? "ON" : "OFF"}`);
+    setText($("toolMap"), `実位置(実験): ${!g.boardMap ? "未設定" : g.mapOn ? "ON" : "OFF"}`);
+    setText($("toolDepth"), `奥行き操作(実験): ${g.depthMode ? "ON" : "OFF"}`);
     setText($("toolHints"), `ヒント: ${this.hints ? "ON" : "OFF"}`);
     const focus = g.held?.type ?? g.hoverInfo()?.type;          // 指している/掴んでいる駒をガイドで光らせる
     document.querySelectorAll<HTMLElement>("#guideList li").forEach((li) => li.classList.toggle("on", li.dataset.type === focus));
