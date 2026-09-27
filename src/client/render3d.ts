@@ -168,10 +168,10 @@ export class GameRenderer {
     list.push(s.group); this.pool.set(key, list);
   }
 
-  /** ナイトは相手側を向く(手前側の陣営は奥向き)。指でつまむ側面が、カメラから見て薄くなる向き */
+  /** ナイトは横顔が見える向きに並べる(手前側は右向き、奥側は左向き)。掴んだ時だけ、指の間に収まる向きへ回す */
   private knightYaw(color: string, bottom: string, grabbed = false) {
-    const base = color === bottom ? Math.PI / 2 : -Math.PI / 2;
-    return grabbed ? base + HAND_YAW : base;
+    if (grabbed) return (color === bottom ? Math.PI / 2 : -Math.PI / 2) + HAND_YAW;
+    return color === bottom ? 0 : Math.PI;
   }
 
   // ---------- 毎フレーム ----------

@@ -7,7 +7,7 @@ import type { Color } from "../shared/protocol";
 
 const K = 0.8;   // projection.ts と同じ盤の縮小率(駒の大きさの基準)
 
-export interface RenderOpts { explain: boolean; debug: boolean; labels?: boolean; hints?: boolean }
+export interface RenderOpts { explain: boolean; debug: boolean; hints?: boolean }
 
 export function draw(ctx: CanvasRenderingContext2D, g: Game, opts: RenderOpts) {
   const { view, input } = g;
@@ -126,7 +126,6 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
 
   if (opts.explain) drawExplain(ctx, g);
 
-  if (opts.labels) drawPieceBadges(ctx, g);
   drawCursorHelp(ctx, g);
 
   // 終局バナー
@@ -156,23 +155,6 @@ function drawDebug(ctx: CanvasRenderingContext2D, g: Game) {
 const roundRect = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 };
-
-/** 各駒の足元に、駒の名前(ポ・ナ・ビ・ル・ク・キ)の小さなバッジを出す */
-function drawPieceBadges(ctx: CanvasRenderingContext2D, g: Game) {
-  const { view } = g, board = g.chess.board();
-  ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-    const p = board[r][c]; if (!p) continue;
-    const sq = sqName(c, r);
-    if (g.held?.from === sq || g.anim?.to === sq) continue;
-    const ctr = g.sqCenter(sq), q = view.project(ctr.x, ctr.y + SQ * 0.36, 0);
-    ctx.fillStyle = p.color === "w" ? "rgba(244,231,192,.92)" : "rgba(38,38,74,.92)";
-    ctx.strokeStyle = p.color === "w" ? "rgba(0,0,0,.5)" : "rgba(125,140,255,.9)"; ctx.lineWidth = 1.5;
-    roundRect(ctx, q.x - 10, q.y - 9, 20, 18, 6); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = p.color === "w" ? "#1b1b1b" : "#e6ecff";
-    ctx.fillText(PIECE_INFO[p.type].short, q.x, q.y + 0.5);
-  }
-}
 
 /** カーソルの近くに、つまむ進み具合と、指している駒/掴んでいる駒の名前・動き方を出す */
 function drawCursorHelp(ctx: CanvasRenderingContext2D, g: Game) {

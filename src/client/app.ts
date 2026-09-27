@@ -30,7 +30,6 @@ export class App {
   private glFailed = false;
   private glCanvas = $<HTMLCanvasElement>("board3d");
   private explain = false;
-  private labels = store.get("labels", true);       // 駒名バッジ
   private hints = store.get("hints", true);         // 動かせる駒の印
   private debug = false;
   private cancelMatch: (() => void) | null = null;
@@ -243,7 +242,6 @@ export class App {
       if (this.input.cameraState === "off") { this.camErrorDismissed = false; void this.input.startCamera(); } else this.input.stopCamera();
     };
     $("toolCalib").onclick = () => this.calibrate();
-    $("toolLabels").onclick = () => { this.labels = !this.labels; store.set("labels", this.labels); };
     $("toolHints").onclick = () => { this.hints = !this.hints; store.set("hints", this.hints); };
     // 駒ガイド(6種類の名前と動き方)
     $("guideList").replaceChildren(...["k", "q", "r", "b", "n", "p"].map((t) => {
@@ -284,7 +282,7 @@ export class App {
   private frame(t: number) {
     if (this.screen === "game") {
       this.input.update(t);
-      const opts = { explain: this.explain, debug: this.debug, labels: this.labels, hints: this.hints };
+      const opts = { explain: this.explain, debug: this.debug, hints: this.hints };
       if (this.gl) { this.gl.render(this.game, opts); drawOverlay(this.ctx, this.game, opts); }
       else draw(this.ctx, this.game, opts);
       this.input.video.hidden = !(this.gl && this.input.cameraState === "ready");     // 3D時はDOMのビデオで映す
@@ -336,7 +334,6 @@ export class App {
     // ツールの表示
     setText($("toolSound"), `効果音: ${audioState.enabled ? "ON" : "OFF"}`);
     setText($("toolCam"), `カメラ: ${inp.cameraState === "off" ? "OFF" : "ON"}`);
-    setText($("toolLabels"), `駒名: ${this.labels ? "ON" : "OFF"}`);
     setText($("toolHints"), `ヒント: ${this.hints ? "ON" : "OFF"}`);
     const focus = g.held?.type ?? g.hoverInfo()?.type;          // 指している/掴んでいる駒をガイドで光らせる
     document.querySelectorAll<HTMLElement>("#guideList li").forEach((li) => li.classList.toggle("on", li.dataset.type === focus));

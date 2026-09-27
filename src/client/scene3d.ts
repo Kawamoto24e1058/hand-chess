@@ -26,62 +26,93 @@ function lathe(pts: [number, number][], mat: THREE.Material): THREE.Mesh {
   return m;
 }
 
+// 駒の差し色(王冠・十字・目)。半透明の予告用の材質を渡された時は、その材質をそのまま使う
+const GOLD = new THREE.MeshStandardMaterial({ color: 0xffc94d, roughness: 0.25, metalness: 0.85, emissive: 0x6a4300, emissiveIntensity: 0.35 });
+const SLIT = new THREE.MeshStandardMaterial({ color: 0x0e1018, roughness: 0.6, metalness: 0.1 });
+
+/**
+ * 駒の3Dモデル。遠目・上からでも種類が分かるよう、シルエットと差し色をはっきりさせている。
+ *  キング=大きな金の十字 / クイーン=金の王冠 / ビショップ=切れ込みのある司教帽 / ナイト=目とたてがみのある馬 / ルーク=胸壁 / ポーン=丸い頭
+ */
 export function buildPiece(type: PieceType, mat: THREE.Material): THREE.Group {
   const g = new THREE.Group();
-  const sphere = (r: number, y: number, sy = 1, x = 0, z = 0) => {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 20), mat);
-    m.position.set(x, y, z); m.scale.y = sy; m.castShadow = true;
-    g.add(m);
+  const ghost = mat.transparent;                                  // 予告用の半透明の駒なら、差し色も同じ材質にする
+  const gold: THREE.Material = ghost ? mat : GOLD;
+  const isLight = (mat.userData as { side?: string }).side === "w";
+  const eye: THREE.Material = ghost ? mat : isLight ? SLIT : GOLD;
+
+  const sphere = (r: number, y: number, m: THREE.Material = mat, sy = 1, x = 0, z = 0) => {
+    const o = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 20), m);
+    o.position.set(x, y, z); o.scale.y = sy; o.castShadow = !ghost;
+    g.add(o); return o;
   };
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, ry = 0) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z); m.rotation.y = ry; m.castShadow = true;
-    g.add(m);
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number, m: THREE.Material = mat, ry = 0) => {
+    const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+    o.position.set(x, y, z); o.rotation.y = ry; o.castShadow = !ghost;
+    g.add(o); return o;
+  };
+  const cone = (r: number, h: number, x: number, y: number, z: number, m: THREE.Material) => {
+    const o = new THREE.Mesh(new THREE.ConeGeometry(r, h, 14), m);
+    o.position.set(x, y, z); o.castShadow = !ghost;
+    g.add(o); return o;
+  };
+  const ring = (r: number, y: number, tube: number, m: THREE.Material) => {
+    const o = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 12, 40), m);
+    o.rotation.x = Math.PI / 2; o.position.y = y; o.castShadow = !ghost;
+    g.add(o); return o;
   };
 
   switch (type) {
-    case "p":
+    case "p":                                                        // ポーン: いちばん小さく、丸い頭
       g.add(lathe([...BASE, [0.2, 0.3], [0.14, 0.5], [0.22, 0.56], [0.26, 0.6], [0.2, 0.64], [0.1, 0.66]], mat));
       sphere(0.21, 0.82);
       break;
-    case "r":
-      g.add(lathe([...BASE, [0.27, 0.3], [0.24, 0.8], [0.34, 0.88], [0.36, 1.02], [0.4, 1.08], [0.4, 1.14], [0.3, 1.14], [0.3, 1.06], [0.001, 1.06]], mat));
+    case "r":                                                        // ルーク: 塔と胸壁
+      g.add(lathe([...BASE, [0.28, 0.3], [0.25, 0.85], [0.36, 0.95], [0.38, 1.06], [0.42, 1.12], [0.42, 1.2], [0.31, 1.2], [0.31, 1.1], [0.001, 1.1]], mat));
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
-        box(0.14, 0.16, 0.13, Math.cos(a) * 0.35, 1.2, Math.sin(a) * 0.35, -a);
+        box(0.17, 0.2, 0.15, Math.cos(a) * 0.36, 1.27, Math.sin(a) * 0.36, mat, -a);
       }
       break;
-    case "b":
-      g.add(lathe([...BASE, [0.22, 0.3], [0.15, 0.7], [0.26, 0.78], [0.28, 0.84], [0.14, 0.9], [0.001, 0.92]], mat));
-      sphere(0.24, 1.12, 1.45);
-      sphere(0.06, 1.52);
+    case "b":                                                        // ビショップ: 細身で、切れ込みのある司教帽と金の玉
+      g.add(lathe([...BASE, [0.22, 0.3], [0.15, 0.75], [0.27, 0.84], [0.3, 0.9], [0.15, 0.98], [0.001, 1.0]], mat));
+      ring(0.2, 0.9, 0.035, gold);
+      sphere(0.25, 1.24, mat, 1.5);
+      { const slit = box(0.035, 0.36, 0.6, 0, 1.34, 0, ghost ? mat : SLIT); slit.rotation.z = -0.62; }
+      sphere(0.075, 1.68, gold);
       break;
-    case "q":
-      g.add(lathe([...BASE, [0.24, 0.3], [0.17, 0.85], [0.3, 0.96], [0.34, 1.05], [0.2, 1.12], [0.3, 1.36], [0.32, 1.42], [0.001, 1.42]], mat));
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        sphere(0.07, 1.46, 1, Math.cos(a) * 0.3, Math.sin(a) * 0.3);
+    case "q":                                                        // クイーン: 高さがあり、金の王冠
+      g.add(lathe([...BASE, [0.25, 0.3], [0.17, 0.9], [0.31, 1.02], [0.36, 1.12], [0.2, 1.2], [0.31, 1.5], [0.35, 1.58], [0.001, 1.58]], mat));
+      ring(0.24, 1.16, 0.03, gold);
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2, x = Math.cos(a) * 0.29, z = Math.sin(a) * 0.29;
+        cone(0.07, 0.3, x, 1.74, z, gold);
+        sphere(0.05, 1.92, gold, 1, x, z);
       }
-      sphere(0.11, 1.64);
+      sphere(0.13, 1.72, gold);
       break;
-    case "k":
-      g.add(lathe([...BASE, [0.24, 0.3], [0.17, 0.85], [0.3, 0.96], [0.34, 1.05], [0.2, 1.12], [0.3, 1.36], [0.2, 1.44], [0.001, 1.46]], mat));
-      box(0.1, 0.38, 0.1, 0, 1.7, 0);
-      box(0.32, 0.1, 0.1, 0, 1.74, 0);
+    case "k":                                                        // キング: いちばん高く、大きな金の十字
+      g.add(lathe([...BASE, [0.25, 0.3], [0.17, 0.9], [0.31, 1.02], [0.36, 1.12], [0.2, 1.2], [0.32, 1.5], [0.36, 1.6], [0.001, 1.6]], mat));
+      ring(0.25, 1.16, 0.03, gold);
+      box(0.13, 0.5, 0.13, 0, 1.86, 0, gold);
+      box(0.4, 0.13, 0.13, 0, 1.92, 0, gold);
       break;
-    case "n": {
+    case "n": {                                                      // ナイト: 目・耳・たてがみのある馬の横顔
       g.add(lathe([...BASE, [0.3, 0.26], [0.001, 0.26]], mat));
-      const s = new THREE.Shape();
+      const sh = new THREE.Shape();
       const pts: [number, number][] = [
-        [-0.26, 0.24], [0.3, 0.24], [0.28, 0.4], [0.16, 0.58], [0.22, 0.62], [0.44, 0.7], [0.48, 0.8], [0.4, 0.92],
-        [0.16, 1.08], [0.1, 1.28], [-0.02, 1.14], [-0.12, 1.16], [-0.28, 0.8], [-0.3, 0.5],
+        [-0.28, 0.24], [0.32, 0.24], [0.3, 0.42], [0.18, 0.6], [0.24, 0.66], [0.46, 0.72], [0.54, 0.82], [0.48, 0.96],
+        [0.24, 1.1], [0.2, 1.36], [0.09, 1.2], [0.03, 1.34], [-0.05, 1.16], [-0.16, 1.2], [-0.2, 1.06], [-0.3, 1.0],
+        [-0.28, 0.84], [-0.36, 0.7], [-0.32, 0.5], [-0.34, 0.36],
       ];
-      s.moveTo(...pts[0]); for (const p of pts.slice(1)) s.lineTo(...p); s.closePath();
-      const geo = new THREE.ExtrudeGeometry(s, { depth: 0.3, bevelEnabled: true, bevelSize: 0.05, bevelThickness: 0.05, bevelSegments: 4, curveSegments: 8 });
-      geo.translate(0, 0, -0.15);
+      sh.moveTo(...pts[0]); for (const q of pts.slice(1)) sh.lineTo(...q); sh.closePath();
+      const geo = new THREE.ExtrudeGeometry(sh, { depth: 0.32, bevelEnabled: true, bevelSize: 0.06, bevelThickness: 0.06, bevelSegments: 4, curveSegments: 8 });
+      geo.translate(0, 0, -0.16);
       const head = new THREE.Mesh(geo, mat);
-      head.castShadow = true; head.receiveShadow = true;
+      head.castShadow = !ghost; head.receiveShadow = !ghost;
       g.add(head);
+      for (const z of [-0.2, 0.2]) sphere(0.055, 1.0, eye, 1, 0.3, z);                 // 目
+      for (const z of [-0.1, 0.1]) sphere(0.03, 0.78, eye, 1, 0.52, z);                // 鼻の穴
       break;
     }
   }
@@ -89,9 +120,9 @@ export function buildPiece(type: PieceType, mat: THREE.Material): THREE.Group {
 }
 
 /** 手が駒をつまむ高さ(駒の底からの高さ) */
-export const GRIP_Y: Record<PieceType, number> = { p: 0.6, r: 0.75, n: 0.85, b: 0.72, q: 0.85, k: 0.85 };
+export const GRIP_Y: Record<PieceType, number> = { p: 0.6, r: 0.8, n: 0.85, b: 0.8, q: 0.9, k: 0.9 };
 /** つまんだ時の指先の間隔(駒の厚み + 指の太さ) */
-export const CLOSED_GAP: Record<PieceType, number> = { p: 0.5, r: 0.66, n: 0.52, b: 0.46, q: 0.56, k: 0.56 };
+export const CLOSED_GAP: Record<PieceType, number> = { p: 0.5, r: 0.7, n: 0.56, b: 0.48, q: 0.58, k: 0.58 };
 
 // ---------- 手 ----------
 class Seg {
@@ -370,8 +401,8 @@ export interface StageMaterials { ivory: THREE.Material; navy: THREE.Material; s
 
 export function makeMaterials(): StageMaterials {
   return {
-    ivory: new THREE.MeshStandardMaterial({ color: IVORY, roughness: 0.34, metalness: 0.06 }),
-    navy: new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.28, metalness: 0.4, emissive: 0x0b0f2a, emissiveIntensity: 0.6 }),
+    ivory: Object.assign(new THREE.MeshStandardMaterial({ color: IVORY, roughness: 0.34, metalness: 0.06 }), { userData: { side: "w" } }),
+    navy: Object.assign(new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.28, metalness: 0.4, emissive: 0x0b0f2a, emissiveIntensity: 0.6 }), { userData: { side: "b" } }),
     skin: new THREE.MeshPhysicalMaterial({ color: 0xd49a7c, roughness: 0.62, metalness: 0, sheen: 0.6, sheenColor: new THREE.Color(0xff9d7e), sheenRoughness: 0.55, emissive: 0x1e0a04, emissiveIntensity: 0.3 }),
     nail: new THREE.MeshStandardMaterial({ color: 0xf0c9bb, roughness: 0.22, metalness: 0.05 }),
     cuff: new THREE.MeshStandardMaterial({ color: 0x1b2a44, roughness: 0.4, metalness: 0.3, emissive: 0x66ccff, emissiveIntensity: 0.55 }),
