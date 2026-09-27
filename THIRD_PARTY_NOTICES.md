@@ -26,3 +26,11 @@ Stockfish を含めて再配布する場合は、GPL-3.0 の条件(ソースの�
 ## three.js (MIT)
 
 - https://github.com/mrdoob/three.js — タイトル画面の3D背景に使用。
+
+## WebXR generic hand model (W3C Software and Document License)
+
+- 場所: `public/hand/right.glb`(タイトル画面の手の3Dモデル)
+- 出典: https://github.com/immersive-web/webxr-input-profiles (`@webxr-input-profiles/assets` の `generic-hand`)
+- ライセンス: [W3C Software and Document License](https://www.w3.org/copyright/software-license-2023/)
+  Copyright © World Wide Web Consortium. https://www.w3.org/copyright/software-license-2023/
+- モデルの骨(関節)を、コードで求めた位置・向きに合わせて動かしています。メッシュ自体は改変していません。

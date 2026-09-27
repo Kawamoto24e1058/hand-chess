@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 /**
  * スタート画面の3D背景。外部モデルは使わず、駒も手もコードで生成する。
@@ -154,10 +155,19 @@ const HAND_YAW = -0.5;                  // 手を少し斜めに向けて、つ�
 const HAND_H = 1.35;                    // 手のひらの中心から、つまむ点までの縦の距離
 const GRIP_LOCAL = new THREE.Vector3(-0.42, -HAND_H, 0.18);   // つまむ点(手のひらの前、親指と人差し指の間)
 
+/** 手の見た目(手続き生成 / GLBモデル)の共通インターフェース */
+interface HandRig {
+  readonly group: THREE.Group;
+  /** 手のひらの中心から見た、つまむ点(親指と人差し指の間)の位置 */
+  readonly grip: THREE.Vector3;
+  pose(gap: number): void;
+}
+
 interface Digit { root: THREE.Vector3; len: number[]; pole: THREE.Vector3; dir: THREE.Vector3; limb: Limb; nail: THREE.Mesh }
 
-class Hand {
+class Hand implements HandRig {
   readonly group = new THREE.Group();
+  readonly grip = GRIP_LOCAL;
   private index: Digit;
   private thumb: Digit;
   private readonly tmp = { mid: new THREE.Vector3(), j2: new THREE.Vector3(), tip: new THREE.Vector3(), t: new THREE.Vector3() };
@@ -226,6 +236,134 @@ class Hand {
   }
 }
 
+// ---------- 骨入りの手のモデル(WebXR generic-hand, GLB) ----------
+const FINGER_NAMES = ["index", "middle", "ring", "pinky"] as const;
+const fingerJoints = (f: string) => [`${f}-finger-phalanx-proximal`, `${f}-finger-phalanx-intermediate`, `${f}-finger-phalanx-distal`, `${f}-finger-tip`];
+const THUMB_JOINTS = ["thumb-metacarpal", "thumb-phalanx-proximal", "thumb-phalanx-distal", "thumb-tip"];
+const MODEL_SCALE = 12;                                        // モデルはメートル単位(手のひら約9cm)なので、シーンの大きさに拡大
+const MODEL_CENTER = new THREE.Vector3(0.035, 0.005, 0.015);   // 手のひらの中心(モデル座標)
+const GLB_GRIP = new THREE.Vector3(-0.3, -0.62, 0.55);         // 手のひらの前方、指を曲げて届く位置
+
+/**
+ * WebXRの標準の手モデルは、関節(骨)が同じ階層に並んでいて、各関節の位置と向きを直接指定できる。
+ * 人差し指と親指はIKで求めた関節位置に、残りの指は握り込む姿勢に、骨の位置・向きを合わせる。
+ */
+class GltfHand implements HandRig {
+  readonly group = new THREE.Group();
+  readonly grip = GLB_GRIP;
+  private root = new THREE.Group();
+  private bones = new Map<string, THREE.Object3D>();
+  private restPos = new Map<string, THREE.Vector3>();     // モデル座標での初期位置
+  private restQuat = new Map<string, THREE.Quaternion>();
+  private nails: Record<string, THREE.Mesh> = {};
+  private tmp = { mid: new THREE.Vector3(), j2: new THREE.Vector3(), tip: new THREE.Vector3() };
+
+  constructor(gltf: GLTF, skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material) {
+    // モデルを「指が下向き、手のひらが手前(+Z)」の座標系に置く: 回転(Y軸90°)・拡大・手のひらの中心を原点に
+    this.root.rotation.y = Math.PI / 2;
+    this.root.scale.setScalar(MODEL_SCALE);
+    this.root.position.copy(MODEL_CENTER).applyAxisAngle(UP, Math.PI / 2).multiplyScalar(-MODEL_SCALE);
+    this.root.add(gltf.scene);
+    this.group.add(this.root);
+
+    gltf.scene.traverse((o) => {
+      if ((o as THREE.SkinnedMesh).isSkinnedMesh) {
+        const m = o as THREE.SkinnedMesh; m.material = skin; m.castShadow = true; m.frustumCulled = false;
+      }
+      if ((o as THREE.Bone).isBone || o.name.includes("-")) {
+        this.bones.set(o.name, o);
+        this.restPos.set(o.name, o.position.clone());
+        this.restQuat.set(o.name, o.quaternion.clone());
+      }
+    });
+
+    // 前腕と袖口(手首の位置から斜め上へ)
+    const wrist = this.local("wrist");
+    const armDir = new THREE.Vector3(0.3, 1, -0.25).normalize();
+    const arm = new Seg(0.3, 0.4, skin);
+    arm.set(wrist.clone().addScaledVector(armDir, -0.05), wrist.clone().addScaledVector(armDir, 5));
+    this.group.add(arm.mesh);
+    const cuffMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.47, 0.42, 36), cuff);
+    cuffMesh.position.copy(wrist).addScaledVector(armDir, 0.9); cuffMesh.quaternion.setFromUnitVectors(UP, armDir);
+    this.group.add(cuffMesh);
+
+    for (const n of [...FINGER_NAMES, "thumb"]) {
+      const nail = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), nailMat);
+      nail.scale.set(0.062, 0.1, 0.028); this.group.add(nail); this.nails[n] = nail;
+    }
+  }
+
+  static load(skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material): Promise<GltfHand> {
+    return new GLTFLoader().loadAsync("/hand/right.glb").then((g) => new GltfHand(g, skin, nailMat, cuff));
+  }
+
+  // モデル座標 <-> 手のローカル座標(手のひらの中心が原点、指は-Y方向、手のひらは+Z向き)
+  private toLocal(p: THREE.Vector3) { return p.clone().sub(MODEL_CENTER).applyAxisAngle(UP, Math.PI / 2).multiplyScalar(MODEL_SCALE); }
+  private toModel(p: THREE.Vector3) { return p.clone().divideScalar(MODEL_SCALE).applyAxisAngle(UP, -Math.PI / 2).add(MODEL_CENTER); }
+  private local(name: string) { return this.toLocal(this.restPos.get(name)!); }
+  private restLocal(names: string[]) { return names.map((n) => this.local(n)); }
+
+  /** 関節の点列(ローカル座標)に、各骨の位置と向きを合わせる */
+  private apply(names: string[], pts: THREE.Vector3[]) {
+    const pm = pts.map((p) => this.toModel(p));
+    const q = new THREE.Quaternion();
+    for (let i = 0; i < names.length; i++) {
+      const bone = this.bones.get(names[i]);
+      if (!bone) continue;
+      if (i < names.length - 1) {
+        const restDir = this.restPos.get(names[i + 1])!.clone().sub(this.restPos.get(names[i])!).normalize();
+        q.setFromUnitVectors(restDir, pm[i + 1].clone().sub(pm[i]).normalize());   // 初期の向き → 新しい向き
+      }
+      bone.position.copy(pm[i]);
+      bone.quaternion.copy(q).multiply(this.restQuat.get(names[i])!);
+    }
+  }
+
+  private nail(key: string, tip: THREE.Vector3, distal: THREE.Vector3, r: number) {
+    placeNail(this.nails[key], tip, tip.clone().sub(distal), new THREE.Vector3(0, 0.25, -1), r);
+  }
+
+  pose(gap: number) {
+    const { mid, j2, tip } = this.tmp;
+
+    // 人差し指: 指先(=つまむ点の右)から指先の向きぶん戻した位置(遠位関節)へ、2ボーンIK
+    const iN = fingerJoints("index"), ir = this.restLocal(iN);
+    const iL = [ir[0].distanceTo(ir[1]), ir[1].distanceTo(ir[2]), ir[2].distanceTo(ir[3])];
+    const iDir = new THREE.Vector3(-0.35, -0.65, 0.5).normalize();
+    const iTip = GLB_GRIP.clone().add(new THREE.Vector3(gap / 2, 0, 0));
+    solveTwoBone(ir[0], iTip.clone().addScaledVector(iDir, -iL[2]), iL[0], iL[1], new THREE.Vector3(0.4, 0.3, -1), mid, j2);
+    tip.copy(j2).addScaledVector(iDir, iL[2]);
+    const ip = [ir[0], mid.clone(), j2.clone(), tip.clone()];
+    this.apply(iN, ip);
+    this.nail("index", ip[3], ip[2], 0.07);
+
+    // 親指: 中手骨を目標へ向けて回し(対立)、残りの2関節をIKで解く
+    const tr = this.restLocal(THUMB_JOINTS);
+    const tLm = tr[0].distanceTo(tr[1]), tLp = tr[1].distanceTo(tr[2]), tLd = tr[2].distanceTo(tr[3]);
+    const tTip = GLB_GRIP.clone().add(new THREE.Vector3(-gap / 2, 0, 0));
+    const dirM = tTip.clone().sub(tr[0]).normalize().lerp(tr[1].clone().sub(tr[0]).normalize(), 0.25).normalize();
+    const mcp = tr[0].clone().addScaledVector(dirM, tLm);
+    solveTwoBone(mcp, tTip, tLp, tLd, new THREE.Vector3(-0.6, 0.2, -0.6), mid, tip);
+    const tp = [tr[0], mcp, mid.clone(), tip.clone()];
+    this.apply(THUMB_JOINTS, tp);
+    this.nail("thumb", tp[3], tp[2], 0.09);
+
+    // 中指・薬指・小指: 手のひら側(+Z)へ握り込む(順運動学)
+    const flex: Record<string, number[]> = { middle: [1.25, 1.5, 0.9], ring: [1.25, 1.5, 0.9], pinky: [1.2, 1.5, 0.9] };
+    for (const f of ["middle", "ring", "pinky"]) {
+      const names = fingerJoints(f), r = this.restLocal(names);
+      let ang = 0;
+      const pts = [r[0]];
+      flex[f].forEach((a, i) => {
+        ang += a;
+        pts.push(pts[i].clone().add(new THREE.Vector3(0, -Math.cos(ang), Math.sin(ang)).multiplyScalar(r[i].distanceTo(r[i + 1]))));
+      });
+      this.apply(names, pts);
+      this.nail(f, pts[3], pts[2], 0.065);
+    }
+  }
+}
+
 // ---------- 動きの台本 ----------
 interface Actor { obj: THREE.Group; type: PieceType; pos: THREE.Vector3 }
 interface Step { actor: Actor; to: THREE.Vector3 }
@@ -244,7 +382,10 @@ export class StartScene {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(40, 1, 0.1, 80);
-  private hand: Hand;
+  private hand: HandRig;
+  private skinMat!: THREE.Material;
+  private nailMat!: THREE.Material;
+  private cuffMat!: THREE.Material;
   private handLight = new THREE.PointLight(0x9fd8ff, 9, 8, 1.8);
   private flash: THREE.Mesh;
   private steps: Step[] = [];
@@ -269,7 +410,7 @@ export class StartScene {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
 
@@ -284,9 +425,17 @@ export class StartScene {
     const skin = new THREE.MeshPhysicalMaterial({ color: 0xd49a7c, roughness: 0.62, metalness: 0, sheen: 0.6, sheenColor: new THREE.Color(0xff9d7e), sheenRoughness: 0.55, emissive: 0x1e0a04, emissiveIntensity: 0.3 });
     const nailMat = new THREE.MeshStandardMaterial({ color: 0xf0c9bb, roughness: 0.22, metalness: 0.05 });
     const cuff = new THREE.MeshStandardMaterial({ color: 0x1b2a44, roughness: 0.4, metalness: 0.3, emissive: 0x66ccff, emissiveIntensity: 0.55 });
-    this.hand = new Hand(skin, nailMat, cuff);
+    this.skinMat = skin; this.nailMat = nailMat; this.cuffMat = cuff;
+    this.hand = new Hand(skin, nailMat, cuff);           // 骨入りモデルを読み込むまでの仮の手
     this.hand.group.rotation.y = HAND_YAW;
     this.scene.add(this.hand.group, this.handLight);
+
+    // 骨入りの手のモデルを読み込めたら差し替える(失敗したら仮の手のまま)
+    GltfHand.load(skin, nailMat, cuff).then((h) => {
+      h.group.rotation.y = HAND_YAW;
+      this.scene.remove(this.hand.group);
+      this.hand = h; this.scene.add(h.group);
+    }).catch((e) => console.warn("手のモデルを読み込めません(簡易の手を使います)", e));
 
     this.flash = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.2, 48), new THREE.MeshBasicMaterial({ color: 0x9fdcff, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }));
     this.flash.rotation.x = -Math.PI / 2;
@@ -475,7 +624,7 @@ export class StartScene {
 
     // 手のひらは、つまむ点の真上。少しだけ揺らす
     const t = performance.now() / 1000;
-    const off = GRIP_LOCAL.clone().applyAxisAngle(UP, HAND_YAW);            // つまむ点のワールドでの手のひらからのずれ
+    const off = this.hand.grip.clone().applyAxisAngle(UP, HAND_YAW);            // つまむ点のワールドでの手のひらからのずれ
     this.hand.group.position.set(grip.x - off.x, grip.y - off.y + Math.sin(t * 2) * 0.03, grip.z - off.z);
     this.hand.pose(gap);
     this.handLight.position.set(grip.x + 0.4, grip.y + 0.8, grip.z + 1.6);
