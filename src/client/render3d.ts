@@ -79,6 +79,10 @@ export class GameRenderer {
   private movableRings: THREE.Mesh[] = [];              // 動かせる駒の足元の印
   private captureRings: THREE.Mesh[] = [];              // 取れるマスの赤い印
   private ghost: Stat | null = null;                    // 置き先に出す、半透明の駒の予告
+  private originGhost: Stat | null = null;              // 元のマスに残す、半透明の駒
+  private originRing: THREE.Mesh;                       // 元のマスの印
+  private originTint: THREE.Mesh;
+  private pathLine: THREE.Mesh;                         // 元のマスから今の位置までの線
   private ghostPool = new Map<string, THREE.Group[]>();
   private ghostMats: { w: THREE.Material; b: THREE.Material };
   private checkMark: THREE.Mesh;
@@ -120,6 +124,13 @@ export class GameRenderer {
     }
     this.hoverRing = flat(0x66ccff, new THREE.RingGeometry(0.4, 0.47, 40), 0.95);
     this.pieceRing = flat(0x66e0ff, new THREE.RingGeometry(0.46, 0.56, 44), 0.9);
+    // 元の位置の表示(青紫): マスの色付け・リング・半透明の駒・今の位置までの線
+    this.originTint = flat(0x7d8cff, sqGeo, 0.3);
+    this.originRing = flat(0x9aa8ff, new THREE.RingGeometry(0.36, 0.46, 44), 0.95);
+    const lineGeo = new THREE.PlaneGeometry(1, 0.07); lineGeo.rotateX(-Math.PI / 2);
+    this.pathLine = new THREE.Mesh(lineGeo, new THREE.MeshBasicMaterial({ color: 0xaab6ff, transparent: true, opacity: 0.55, depthWrite: false }));
+    this.pathLine.position.y = 0.014; this.pathLine.visible = false; this.pathLine.renderOrder = 2;
+    this.scene.add(this.pathLine);
     const thin = new THREE.RingGeometry(0.43, 0.47, 40), red = new THREE.RingGeometry(0.34, 0.44, 40);
     for (let i = 0; i < MAX_MOVABLE; i++) this.movableRings.push(flat(0x66e0ff, thin, 0.4));
     for (let i = 0; i < MAX_TARGETS; i++) this.captureRings.push(flat(0xff5a5a, red, 0.85));
@@ -314,6 +325,27 @@ export class GameRenderer {
       this.ghost.group.position.set(toWorldX(c.x), 0, toWorldZ(c.y));
       if (held.type === "n") this.ghost.group.rotation.y = this.knightYaw(held.color, bottom);
     } else if (this.ghost) { this.releaseGhost(this.ghost); this.ghost = null; }
+
+    // 元の位置: 掴んだ駒がどこから来たかが分かるように、元のマスを青紫で示し、半透明の駒を残す
+    if (held && cur) {
+      const o = g.sqCenter(held.from);
+      this.place(this.originTint, held.from, g); this.place(this.originRing, held.from, g);
+      if (!this.originGhost || this.originGhost.type !== held.type || this.originGhost.color !== held.color) {
+        if (this.originGhost) this.releaseGhost(this.originGhost);
+        this.originGhost = this.acquireGhost(held.type, held.color, bottom);
+      }
+      this.originGhost.group.position.set(toWorldX(o.x), 0, toWorldZ(o.y));
+      if (held.type === "n") this.originGhost.group.rotation.y = this.knightYaw(held.color, bottom);
+      // 元のマスから今の位置までの細い線
+      const dx = toWorldX(cur.x) - toWorldX(o.x), dz = toWorldZ(cur.y) - toWorldZ(o.y), len = Math.hypot(dx, dz);
+      this.pathLine.visible = len > 0.6;
+      this.pathLine.position.x = toWorldX(o.x) + dx / 2; this.pathLine.position.z = toWorldZ(o.y) + dz / 2;
+      this.pathLine.rotation.y = -Math.atan2(dz, dx);
+      this.pathLine.scale.x = Math.max(0.001, len - 0.5);
+    } else {
+      this.originTint.visible = false; this.originRing.visible = false; this.pathLine.visible = false;
+      if (this.originGhost) { this.releaseGhost(this.originGhost); this.originGhost = null; }
+    }
   }
 
   private acquireGhost(type: string, color: string, bottom: string): Stat {
