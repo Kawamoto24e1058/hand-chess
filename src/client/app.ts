@@ -244,6 +244,7 @@ export class App {
       if (this.input.cameraState === "off") { this.camErrorDismissed = false; void this.input.startCamera(); } else this.input.stopCamera();
     };
     $("toolCalib").onclick = () => this.calibrate();
+    $("toolRelock").onclick = () => { this.input.releaseLock(); this.toast("いちばん近くの手を追従し直します", 2200); };
     $("toolHints").onclick = () => { this.hints = !this.hints; store.set("hints", this.hints); };
     // 駒ガイド(6種類の名前と動き方)
     $("guideList").replaceChildren(...["k", "q", "r", "b", "n", "p"].map((t) => {
@@ -271,6 +272,7 @@ export class App {
       else if (k === "e") this.explain = !this.explain;
       else if (k === "f") this.input.useFilter = !this.input.useFilter;
       else if (k === "c") this.calibrate();
+      else if (k === "r") { this.input.releaseLock(); this.toast("いちばん近くの手を追従し直します", 2200); }
     });
   }
 

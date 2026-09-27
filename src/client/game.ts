@@ -246,7 +246,7 @@ export class Game {
     // 二人対戦: 次に指す人の陣営が手前に来るように、盤を回す(描画側がなめらかに回す)
     if (this.mode.kind === "local" && !this.result) {
       const f = this.chess.turn() === "b";
-      if (f !== this.flip) { this.flip = f; this.turnLockUntil = performance.now() + 900; }
+      if (f !== this.flip) { this.flip = f; this.turnLockUntil = performance.now() + 900; this.input.releaseLock(); }   // 手番が変わったら、次の人の手を追従し直す
     }
   }
 

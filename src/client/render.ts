@@ -118,6 +118,11 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
     ctx.fillStyle = "rgba(120,220,255,.9)";
     for (const p of input.landmarks) { const [x, y] = toScreen(p.x, p.y); ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill(); }
   }
+  // 追従していない手(見ている人・相手の手)は、赤く薄く出して「拾っていない」ことを示す
+  if (input.otherHands.length) {
+    ctx.fillStyle = "rgba(255,110,110,.35)";
+    for (const h of input.otherHands) for (const p of h) { const [x, y] = toScreen(p.x, p.y); ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill(); }
+  }
   // カーソル
   if (cur) {
     const q = view.project(cur.x, cur.y);

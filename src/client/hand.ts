@@ -14,6 +14,8 @@ const LOST_GRACE = 400;       // 検出が一瞬落ちても掴みを維持す�
 const RELEASE_FRAMES = 3;     // 「離す」確定に必要な連続フレーム数
 const GRAB_FRAMES = 2;        // 「掴む」確定に必要な連続フレーム数
 const CAL_SETTLE = 800, CAL_MS = 2500;
+const MIN_HAND_SIZE = 0.07;        // 手首〜中指の付け根の長さ(画像に対する割合)。これより小さい手(遠い人)は無視
+const LOCK_RADIUS = 0.22;          // 追従中の手が、前のフレームからこれ以上離れたら別の手とみなす
 
 /** 正規化されたカメラ座標(ミラー済み)を、カメラ中央80%が盤面全体に対応する画面座標に */
 export const toScreen = (nx: number, ny: number): [number, number] => [
@@ -52,6 +54,7 @@ export class HandInput {
 
   // 解説・デバッグ表示用
   landmarks: NormalizedLandmark[] | null = null;
+  otherHands: NormalizedLandmark[][] = [];              // 追従していない(無視している)手。画面に薄く出して、拾っていないことを示す
   pinchRatio = 0; imgRatio = 0; fps = 0;
   rawTrail: [number, number][] = []; filtTrail: [number, number][] = []; ratioHist: [number, boolean][] = [];
 
@@ -62,6 +65,7 @@ export class HandInput {
   private lastVideoTime = -1;
   private grabFrames = 0; private relFrames = 0; private relStart = 0; private lostSince = 0;
   private seen = 0;
+  private lockPos: { x: number; y: number } | null = null;   // 追従中の手の位置(手の付け根)。これに近い手を追い続ける
   private fpsCount = 0; private fpsT = performance.now();
 
   constructor() {
@@ -74,6 +78,9 @@ export class HandInput {
     if (this.pinch) return 1;
     return Math.min(1, Math.max(0, (this.thr.release - this.pinchRatio) / Math.max(1e-3, this.thr.release - this.thr.grab)));
   }
+
+  /** 追従を解除する。次に、いちばん近くに映った手を追従し直す(二人対戦で手番が変わった時など) */
+  releaseLock() { this.lockPos = null; this.cancelHold(); this.fx.reset(); this.fy.reset(); }
 
   // ---------- カメラ ----------
   async startCamera(): Promise<void> {
@@ -106,7 +113,7 @@ export class HandInput {
     const fileset = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
     const make = (delegate: "GPU" | "CPU") => HandLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: "/models/hand_landmarker.task", delegate },
-      runningMode: "VIDEO", numHands: 1,
+      runningMode: "VIDEO", numHands: 3,          // 見ている人の手も検出して、追従する1つを自分で選ぶ
       minHandDetectionConfidence: 0.4, minHandPresenceConfidence: 0.4, minTrackingConfidence: 0.4,   // 既定0.5より緩めて検出落ちを減らす
     });
     try { return await make("GPU"); } catch { return await make("CPU"); }
@@ -141,7 +148,20 @@ export class HandInput {
     this.lastVideoTime = this.video.currentTime; this.fpsCount++;
 
     const res = this.landmarker.detectForVideo(this.video, t);
-    const lm = res.landmarks[0], wl = res.worldLandmarks?.[0];
+    const hands = res.landmarks.map((l, i) => ({ lm: l, wl: res.worldLandmarks?.[i], size: dist(l[0], l[9]), c: l[9] }));
+
+    // 追従する手を1つに決める: 追従中は「前の位置に近い手」を追い続け、まだ決まっていなければ「いちばん近く(大きく)映った手」を選ぶ
+    let pick: (typeof hands)[number] | null = null;
+    if (this.lockPos) {
+      let bd = LOCK_RADIUS;
+      for (const h of hands) { const d = Math.hypot(h.c.x - this.lockPos.x, h.c.y - this.lockPos.y); if (d < bd) { bd = d; pick = h; } }
+    } else if (hands.length) {
+      const biggest = hands.reduce((a, b) => (b.size > a.size ? b : a));
+      if (biggest.size >= MIN_HAND_SIZE) pick = biggest;
+    }
+    this.otherHands = hands.filter((h) => h !== pick).map((h) => h.lm);
+    const lm = pick?.lm, wl = pick?.wl;
+    if (pick) this.lockPos = { x: pick.c.x, y: pick.c.y };
     this.landmarks = lm ?? null;
 
     if (!lm) { this.onHandLost(t); return; }
@@ -175,7 +195,7 @@ export class HandInput {
     if (this.source !== "hand") return;
     this.lostSince ||= t;
     if (t - this.lostSince < LOST_GRACE) return;         // 一瞬の検出落ちは無視(掴んだ駒はその場に保持)
-    this.fx.reset(); this.fy.reset(); this.grabFrames = 0; this.lostSince = 0;
+    this.fx.reset(); this.fy.reset(); this.grabFrames = 0; this.lostSince = 0; this.lockPos = null;
     if (this.calib) { this.calib = null; this.onNotice?.("手を見失ったのでキャリブレーションを中断しました"); }
     this.cancelHold();
     this.source = "none";
