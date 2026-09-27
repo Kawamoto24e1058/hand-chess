@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Hand Chess — 手だけで指すチェス</title>
+  <meta name="description" content="Webカメラの前で親指と人差し指をつまむだけ。MediaPipeのハンドトラッキングで駒を動かす、ブラウザだけで遊べるチェス。">
+  <meta property="og:title" content="Hand Chess — 手だけで指すチェス">
+  <meta property="og:description" content="つまんで、動かして、離す。カメラ映像は端末内だけで処理されます。">
+  <meta name="theme-color" content="#0d1017">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♞</text></svg>">
+  <script type="module" src="/src/client/main.ts"></script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== スタート画面 ===== -->
+  <section id="screen-start" class="screen start">
+    <div class="bg" aria-hidden="true">
+      <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+      <div class="floor"></div>
+      <span class="float" style="--x:6%;--d:19s;--s:64px;--o:.10;--delay:-2s">♞</span>
+      <span class="float" style="--x:18%;--d:24s;--s:38px;--o:.07;--delay:-11s">♟</span>
+      <span class="float" style="--x:31%;--d:21s;--s:84px;--o:.06;--delay:-6s">♜</span>
+      <span class="float" style="--x:46%;--d:27s;--s:44px;--o:.08;--delay:-15s">♝</span>
+      <span class="float" style="--x:59%;--d:22s;--s:72px;--o:.07;--delay:-9s">♛</span>
+      <span class="float" style="--x:72%;--d:26s;--s:40px;--o:.09;--delay:-3s">♟</span>
+      <span class="float" style="--x:84%;--d:20s;--s:78px;--o:.06;--delay:-13s">♚</span>
+      <span class="float" style="--x:93%;--d:25s;--s:48px;--o:.08;--delay:-8s">♞</span>
+    </div>
+
+    <div class="wrap">
+      <nav class="topbar">
+        <div class="brand"><span class="logo">♞</span><span>Hand Chess</span></div>
+        <div class="profile">
+          <label class="switch" title="Webカメラで手を追跡して操作します">
+            <input id="useCamera" type="checkbox" checked><span class="track"></span><span class="switch-label">✋ カメラ操作</span>
+          </label>
+          <div class="namebox"><span class="avatar" id="avatar">P</span><input id="name" maxlength="16" placeholder="プレイヤー名" autocomplete="nickname" aria-label="プレイヤー名"></div>
+        </div>
+      </nav>
+
+      <header class="hero">
+        <p class="eyebrow"><span class="pulse"></span>MediaPipe × Stockfish × Cloudflare</p>
+        <h1>つまんで、動かして、<span class="grad">指す。</span></h1>
+        <p class="lead">Webカメラの前で親指と人差し指をつまむだけ。インストール不要、ブラウザだけで遊べる「手」で指すチェス。</p>
+        <div class="cta">
+          <button id="heroAI" class="btn-hero">AIと対戦する <span aria-hidden="true">→</span></button>
+          <a class="ghost" href="#modes">ほかの遊び方</a>
+        </div>
+
+        <div class="demo" aria-hidden="true">
+          <div class="demo-board">
+            <div class="sq l"></div><div class="sq d"></div><div class="sq l"></div><div class="sq d"></div><div class="sq l"></div>
+            <div class="mover">
+              <span class="piece">♞</span>
+              <span class="hand"><i class="f f1"></i><i class="f f2"></i></span>
+            </div>
+          </div>
+          <p class="demo-cap">つまむ → 持ち上げる → 離す</p>
+        </div>
+      </header>
+
+      <div id="invite" class="invite" hidden>
+        <div><span class="badge">招待</span> 部屋コード <b id="inviteCode"></b> に招待されています</div>
+        <button id="joinInvite" class="btn-primary">この部屋に参加</button>
+      </div>
+
+      <section id="modes" class="tiles">
+        <article class="tile">
+          <div class="tile-icon ai">♞</div>
+          <h2>AIと対戦</h2>
+          <p>Stockfishがブラウザの中で相手をします。</p>
+          <div class="seg" id="aiSeg" role="radiogroup" aria-label="AIの強さ">
+            <button type="button" data-v="2" role="radio">やさしい</button>
+            <button type="button" data-v="9" role="radio" class="on">ふつう</button>
+            <button type="button" data-v="17" role="radio">つよい</button>
+          </div>
+          <select id="aiLevel" hidden><option value="2">やさしい</option><option value="9" selected>ふつう</option><option value="17">つよい</option></select>
+          <button id="startAI" class="btn-primary">対戦する</button>
+        </article>
+
+        <article class="tile">
+          <div class="tile-icon local">♚</div>
+          <h2>二人で対戦</h2>
+          <p>1台のPCで、交代しながら駒を動かします。</p>
+          <div class="spacer"></div>
+          <button id="startLocal" class="btn-primary">対戦する</button>
+        </article>
+
+        <article class="tile wide online">
+          <div class="tile-head">
+            <div class="tile-icon net">◎</div>
+            <div><h2>オンライン対戦</h2><p>世界のどこかの誰かと、手だけで一局。</p></div>
+          </div>
+          <div class="seg tabs" id="onlineTabs" role="tablist">
+            <button type="button" data-tab="random" role="tab" class="on">ランダム</button>
+            <button type="button" data-tab="create" role="tab">部屋を作る</button>
+            <button type="button" data-tab="join" role="tab">コードで参加</button>
+          </div>
+          <div class="panel" data-panel="random">
+            <p class="note">待っている人がいればすぐ対局が始まります(5分 + 3秒)。</p>
+            <button id="startRandom" class="btn-primary">対戦相手を探す</button>
+          </div>
+          <div class="panel" data-panel="create" hidden>
+            <label class="inline">持ち時間
+              <select id="tc"><option value="5+3" selected>5分 + 3秒</option><option value="3+2">3分 + 2秒</option><option value="10+0">10分</option><option value="none">無制限</option></select>
+            </label>
+            <p class="note">部屋コードか招待リンクを友だちに送ってください。</p>
+            <button id="createRoom" class="btn-primary">部屋を作る</button>
+          </div>
+          <div class="panel" data-panel="join" hidden>
+            <div class="row">
+              <input id="joinCode" maxlength="8" placeholder="ABCDE" autocapitalize="characters" spellcheck="false" aria-label="部屋コード">
+              <button id="joinRoom" class="btn-primary">参加する</button>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="steps">
+        <h3>遊び方はかんたん</h3>
+        <ol>
+          <li><span class="n">1</span><div><b>手を映す</b><p>カメラの前に手を出します。映像の中央が盤に対応します。</p></div></li>
+          <li><span class="n">2</span><div><b>つまんで掴む</b><p>親指と人差し指をつまむと、その下の駒を掴めます。</p></div></li>
+          <li><span class="n">3</span><div><b>離して置く</b><p>行きたいマスで指を開くと、駒がそこに置かれます。</p></div></li>
+        </ol>
+        <p class="tip">掴みにくい時は、対局画面の「設定・ツール → キャリブレーション」で自分の手に合わせられます。カメラなしでもマウス/タッチで遊べます。</p>
+      </section>
+
+      <footer class="foot">
+        <p>🔒 カメラ映像はこの端末の中だけで処理され、送信・保存されません。サーバーに送るのは名前と指し手だけです。</p>
+        <p class="links"><a href="https://github.com/Kawamoto24e1058/hand-chess" target="_blank" rel="noopener">GitHub</a><span>·</span><span>Powered by MediaPipe, Stockfish, Cloudflare Workers</span></p>
+      </footer>
+    </div>
+  </section>
+
+  <!-- ===== ランダムマッチ待機 ===== -->
+  <section id="screen-lobby" class="screen center" hidden>
+    <div class="spinner"></div>
+    <h2 id="lobbyTitle">対戦相手を探しています…</h2>
+    <p class="note">別の人が来るとすぐに始まります。</p>
+    <button id="cancelMatch">キャンセル</button>
+  </section>
+
+  <!-- ===== 対局画面 ===== -->
+  <section id="screen-game" class="screen game" hidden>
+    <div class="stage">
+      <canvas id="board" width="720" height="720"></canvas>
+      <div id="camOverlay" class="cam-overlay" hidden>
+        <div id="camMsg"></div>
+        <div class="row" id="camActions"></div>
+      </div>
+      <div id="calibBanner" class="calib-banner" hidden>
+        <span>最初にキャリブレーションをすると、掴みやすくなります</span>
+        <button id="calibStart" class="primary small">開始</button>
+        <button id="calibLater" class="small">あとで</button>
+      </div>
+    </div>
+
+    <aside class="hud">
+      <div class="player" id="playerTop"><span class="dot" id="dotTop"></span><span class="pname" id="nameTop"></span><span class="clock" id="clockTop"></span></div>
+
+      <div id="roomBox" class="roombox" hidden>
+        部屋 <b id="roomCode"></b>
+        <button id="copyLink" class="small">招待リンクをコピー</button>
+      </div>
+
+      <div id="status" class="status"></div>
+
+      <div id="drawPrompt" class="prompt" hidden>
+        引き分けを提案されています
+        <span><button id="drawYes" class="small primary">受ける</button> <button id="drawNo" class="small">断る</button></span>
+      </div>
+      <div id="rematchPrompt" class="prompt" hidden>相手が再戦を申し込んでいます</div>
+
+      <ol id="moves" class="moves"></ol>
+
+      <div class="player me" id="playerBottom"><span class="dot" id="dotBottom"></span><span class="pname" id="nameBottom"></span><span class="clock" id="clockBottom"></span></div>
+
+      <div class="row actions">
+        <button id="resign" class="danger">投了</button>
+        <button id="draw">引き分け</button>
+        <button id="rematch" hidden class="primary">再戦</button>
+        <button id="home">ホームへ</button>
+      </div>
+
+      <details class="tools">
+        <summary>設定・ツール</summary>
+        <div class="toolgrid">
+          <button id="tool3d">3D視点</button>
+          <button id="toolSound">効果音: ON</button>
+          <button id="toolCam">カメラ: ON</button>
+          <button id="toolCalib">キャリブレーション (C)</button>
+          <button id="toolFilter">フィルタ: ON (F)</button>
+          <button id="toolExplain">解説表示 (E)</button>
+        </div>
+      </details>
+    </aside>
+  </section>
+
+  <!-- ===== 結果 ===== -->
+  <div id="modal" class="modal" hidden>
+    <div class="dialog">
+      <h2 id="modalTitle"></h2>
+      <p id="modalReason"></p>
+      <div class="row">
+        <button id="modalRematch" class="primary">再戦</button>
+        <button id="modalHome">ホームへ</button>
+        <button id="modalClose">盤を見る</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</div>
+</body>
+</html>

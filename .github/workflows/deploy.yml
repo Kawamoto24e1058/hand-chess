@@ -1,0 +1,31 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci          # postinstall で MediaPipe の WASM / モデルを public/ に用意する
+      - run: npm run typecheck
+      - name: Deploy
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npm run deploy
+      - name: Skip deploy (secrets not set)
+        if: env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "::notice::CLOUDFLARE_API_TOKEN が未設定のためデプロイをスキップしました。README の「自動デプロイ」を参照してください。"

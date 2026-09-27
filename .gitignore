@@ -1,0 +1,6 @@
+node_modules
+dist
+.wrangler
+.dev.vars
+public/mediapipe
+public/models

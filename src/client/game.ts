@@ -1,0 +1,337 @@
+import { Chess } from "chess.js";
+import type { ClockState, Color, GameResult, MoveInput, Names, Presence, ServerMsg, TimeControl } from "../shared/protocol";
+import { sfx } from "./audio";
+import { Engine } from "./engine";
+import type { HandInput, PinchEndReason } from "./hand";
+import { RoomConnection, type NetStatus } from "./net";
+import { glyphOf, FILES, sqName } from "./pieces";
+import { SQ, S, View, type Pt } from "./projection";
+
+export type GameMode =
+  | { kind: "ai"; skill: number }
+  | { kind: "local" }
+  | { kind: "online"; room: string; tc: string };
+
+export interface Held { from: string; glyph: string; color: Color; targets: Set<string> }
+export interface Anim {
+  to: string; glyph: string; color: Color; own: boolean; t0: number; dur: number;
+  x0: number; y0: number; x1: number; y1: number;
+  fx: { captured: boolean; capturedColor: Color; san: string };
+}
+export interface Particle { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number; color: string }
+
+const other = (c: Color): Color => (c === "w" ? "b" : "w");
+
+/**
+ * 対局の状態と進行。入力(HandInput)・エンジン・サーバー接続をつなぎ、描画(render.ts)とUI(ui.ts)は
+ * このクラスの公開フィールドを読むだけにする。
+ */
+export class Game {
+  chess = new Chess();
+  mode: GameMode = { kind: "local" };
+  myColor: Color | null = "w";        // null: 観戦、またはローカル対戦(両方指せる)
+  flip = false;
+  held: Held | null = null;
+  thinking = false;
+  lastMove: { from: string; to: string } | null = null;
+  anim: Anim | null = null;
+  particles: Particle[] = [];
+  shake = 0;
+  moveList: string[] = [];
+
+  result: GameResult | null = null;
+  resultSeq = 0;                       // 終局のたびに増える(UIがモーダルを出すきっかけ)
+  names: Names = { w: null, b: null };
+  present: Presence = { w: true, b: true };
+  timeControl: TimeControl = { baseMs: 0, incrementMs: 0 };
+  drawOffer: Color | null = null;
+  rematchOffer: Color | null = null;
+  netStatus: NetStatus | "none" = "none";
+  roomCode = "";
+
+  onToast?: (msg: string, ms?: number) => void;
+  onDrawOffer?: () => void;
+
+  private clockBase = { w: 0, b: 0, turn: "w" as Color, running: false, at: 0 };
+  private net: RoomConnection | null = null;
+  private serverCount = 0;
+  private playerName = "Player";
+  private engine = new Engine();
+  private token = 0;                   // AI思考中に画面を離れた時、古い応答を捨てるため
+
+  constructor(readonly input: HandInput, readonly view: View) {
+    input.onPinchStart = (past, now) => this.onPinchStart(past, now);
+    input.onPinchEnd = (past, reason) => this.onPinchEnd(past, reason);
+    this.engine.init();
+  }
+
+  // ---------- 開始・終了 ----------
+  start(mode: GameMode, name: string) {
+    this.destroy();
+    this.mode = mode; this.playerName = name || "Player";
+    this.resetBoard();
+    this.myColor = mode.kind === "online" ? null : mode.kind === "ai" ? "w" : null;
+    this.flip = false;
+    this.names = mode.kind === "ai" ? { w: this.playerName, b: `AI (Stockfish)` } : mode.kind === "local" ? { w: "白", b: "黒" } : { w: null, b: null };
+    this.present = { w: true, b: true };
+    this.timeControl = { baseMs: 0, incrementMs: 0 };
+    this.clockBase = { w: 0, b: 0, turn: "w", running: false, at: performance.now() };
+    if (mode.kind === "online") {
+      this.roomCode = mode.room; this.present = { w: false, b: false };
+      this.net = new RoomConnection(mode.room, mode.tc, this.playerName, (m) => this.onServer(m), (s) => { this.netStatus = s; });
+    } else { this.roomCode = ""; this.netStatus = "none"; }
+  }
+
+  destroy() {
+    this.token++;
+    this.net?.close(); this.net = null; this.netStatus = "none";
+    this.held = null; this.input.holding = false; this.thinking = false;
+  }
+
+  private resetBoard() {
+    this.chess = new Chess(); this.moveList = []; this.lastMove = null; this.anim = null; this.particles = [];
+    this.held = null; this.input.holding = false; this.thinking = false;
+    this.result = null; this.drawOffer = null; this.rematchOffer = null; this.serverCount = 0;
+  }
+
+  // ---------- 入力 ----------
+  private board(p: Pt): Pt { const b = this.view.unproject(p.x, p.y); return { x: Math.min(S, Math.max(0, b.x)), y: Math.min(S, Math.max(0, b.y)) }; }
+
+  /** 現在のカーソル位置(盤面座標)。未入力なら null */
+  get cursor(): Pt | null { return this.input.screen.x < 0 ? null : this.board(this.input.screen); }
+
+  sqAt(p: Pt): string | null {
+    const dc = Math.floor(p.x / SQ), dr = Math.floor(p.y / SQ);
+    if (dc < 0 || dc > 7 || dr < 0 || dr > 7) return null;
+    return sqName(this.flip ? 7 - dc : dc, this.flip ? 7 - dr : dr);
+  }
+
+  sqCenter(sq: string): Pt {
+    const c = FILES.indexOf(sq[0]), r = 8 - +sq[1];
+    return { x: ((this.flip ? 7 - c : c) + 0.5) * SQ, y: ((this.flip ? 7 - r : r) + 0.5) * SQ };
+  }
+
+  /** 離す位置に最も近い合法マスへ吸着する */
+  snapTarget(p: Pt): string | null {
+    if (!this.held) return this.sqAt(p);
+    let best: string | null = null, bd = SQ * 0.7;
+    for (const t of this.held.targets) {
+      const c = this.sqCenter(t), d = Math.hypot(c.x - p.x, c.y - p.y);
+      if (d < bd) { bd = d; best = t; }
+    }
+    return best ?? this.sqAt(p);
+  }
+
+  private onPinchStart(past: Pt, now: Pt) {
+    if (!this.tryGrab(this.sqAt(this.board(past)))) this.tryGrab(this.sqAt(this.board(now)));
+  }
+
+  private onPinchEnd(past: Pt, reason: PinchEndReason) {
+    if (!this.held) return;
+    if (reason === "lost") { this.held = null; this.input.holding = false; this.onToast?.("手を見失ったので駒を戻しました"); return; }
+    void this.drop(this.snapTarget(this.board(past)));
+  }
+
+  canMoveNow(color: Color): boolean {
+    if (this.thinking || this.result || this.chess.turn() !== color || this.anim?.own) return false;
+    switch (this.mode.kind) {
+      case "ai": return color === "w";
+      case "local": return true;
+      case "online": return this.myColor === color && this.present.w && this.present.b && this.netStatus === "open";
+    }
+  }
+
+  private tryGrab(sq: string | null): boolean {
+    if (this.held || !sq) return false;
+    const p = this.chess.get(sq as never);
+    if (!p || !this.canMoveNow(p.color)) return false;
+    const targets = new Set(this.chess.moves({ square: sq as never, verbose: true }).map((m) => m.to));
+    if (!targets.size) return false;
+    this.held = { from: sq, glyph: glyphOf(p.type), color: p.color, targets };
+    this.input.holding = true;
+    sfx.grab();
+    return true;
+  }
+
+  private async drop(sq: string | null) {
+    const h = this.held;
+    this.held = null; this.input.holding = false;
+    if (!h || !sq || !h.targets.has(sq)) return;
+    const mv: MoveInput = { from: h.from, to: sq, promotion: "q" };   // 昇格はクイーン固定
+    const from = this.cursor ?? undefined;
+    if (!this.applyMove(mv, from)) return;
+    if (this.mode.kind === "online") { this.net?.send({ t: "move", move: mv }); return; }
+    if (this.checkLocalEnd()) return;
+    if (this.mode.kind === "ai") await this.aiReply();
+  }
+
+  private async aiReply() {
+    if (this.mode.kind !== "ai") return;
+    const token = ++this.token;
+    this.thinking = true;
+    const mv = await this.engine.bestMove(this.chess, this.mode.skill);
+    if (token !== this.token) return;
+    this.thinking = false;
+    if (mv) { try { this.applyMove(mv); } catch { /* 不正手は無視 */ } }
+    this.checkLocalEnd();
+  }
+
+  // ---------- 着手 ----------
+  private applyMove(mv: MoveInput, dropFrom?: Pt): boolean {
+    if (this.anim) this.landFx(this.anim);
+    let m;
+    try { m = this.chess.move(mv); } catch { return false; }
+    this.lastMove = { from: m.from, to: m.to };
+    this.moveList.push(m.san);
+    const a = this.sqCenter(m.from), b = this.sqCenter(m.to), piece = this.chess.get(m.to as never)!;
+    this.anim = {
+      to: m.to, glyph: glyphOf(piece.type), color: piece.color, own: !!dropFrom,
+      t0: performance.now(), dur: dropFrom ? 160 : 380,
+      x0: dropFrom?.x ?? a.x, y0: dropFrom?.y ?? a.y, x1: b.x, y1: b.y,
+      fx: { captured: !!m.captured, capturedColor: other(m.color), san: m.san },
+    };
+    return true;
+  }
+
+  /** 駒が着地した瞬間の演出(効果音・パーティクル・画面の揺れ) */
+  landFx(a: Anim) {
+    if (a.fx.captured) { sfx.capture(); this.burst(a.to, a.fx.capturedColor); } else sfx.place();
+    if (a.fx.san.endsWith("+")) sfx.check();
+    if (this.anim === a) this.anim = null;
+  }
+
+  private burst(sq: string, capturedColor: Color) {
+    const c = this.sqCenter(sq), cols = ["#fc6", "#f96", capturedColor === "w" ? "#fff" : "#8af"];
+    for (let i = 0; i < 30; i++) {
+      this.particles.push({ x: c.x, y: c.y, z: SQ * 0.4, vx: (Math.random() - 0.5) * 7, vy: (Math.random() - 0.5) * 7, vz: Math.random() * 9 + 3, life: 1, color: cols[i % 3] });
+    }
+    this.shake = 9;
+  }
+
+  private checkLocalEnd(): boolean {
+    const c = this.chess, mover = other(c.turn());
+    let r: GameResult | null = null;
+    if (c.isCheckmate()) r = { winner: mover, reason: "checkmate" };
+    else if (c.isStalemate()) r = { winner: null, reason: "stalemate" };
+    else if (c.isInsufficientMaterial()) r = { winner: null, reason: "insufficient" };
+    else if (c.isThreefoldRepetition()) r = { winner: null, reason: "repetition" };
+    else if (c.isDraw()) r = { winner: null, reason: "fifty" };
+    if (r) this.setResult(r);
+    return !!r;
+  }
+
+  private setResult(r: GameResult) {
+    this.result = r; this.resultSeq++; this.held = null; this.input.holding = false; this.thinking = false; this.token++;
+    if (this.mode.kind === "ai" || this.myColor) {
+      if (r.winner === null) sfx.notify(); else if (r.winner === this.myColor) sfx.win(); else sfx.lose();
+    } else sfx.win();
+  }
+
+  // ---------- 操作ボタン ----------
+  resign() {
+    if (this.result) return;
+    if (this.mode.kind === "online") return this.net?.send({ t: "resign" });
+    const loser = this.mode.kind === "ai" ? "w" : this.chess.turn();
+    this.setResult({ winner: other(loser), reason: "resign" });
+  }
+
+  offerDraw() {
+    if (this.result) return;
+    if (this.mode.kind === "online") { this.net?.send({ t: "draw-offer" }); this.onToast?.("引き分けを提案しました"); }
+    else if (this.mode.kind === "local") this.setResult({ winner: null, reason: "agreement" });
+  }
+  acceptDraw() { this.net?.send({ t: "draw-accept" }); }
+  declineDraw() { this.net?.send({ t: "draw-decline" }); this.drawOffer = null; }
+
+  rematch() {
+    if (this.mode.kind === "online") { this.net?.send({ t: "rematch" }); this.onToast?.("再戦を申し込みました"); return; }
+    this.token++; this.resetBoard();
+  }
+
+  // ---------- サーバーからのメッセージ ----------
+  private onServer(m: ServerMsg) {
+    switch (m.t) {
+      case "joined":
+        this.myColor = m.color; this.flip = m.color === "b";
+        if (!m.color) this.onToast?.("観戦モードで入室しました");
+        break;
+      case "sync": {
+        this.rebuild(m.moves);
+        this.names = m.names; this.present = m.present; this.timeControl = m.timeControl;
+        this.setClock(m.clock); this.drawOffer = m.drawOffer; this.rematchOffer = null;
+        const finished = m.result && !this.result;
+        this.result = m.result;
+        if (finished) this.resultSeq++;
+        break;
+      }
+      case "move": {
+        this.setClock(m.clock);
+        if (this.moveList.length === this.serverCount) {            // 相手の手(自分の手はすでに反映済み)
+          if (!this.applyMove(m.move)) { this.net?.send({ t: "join", name: this.playerName }); break; }
+          this.revalidateHeld();
+        }
+        this.serverCount++;
+        this.drawOffer = null;
+        break;
+      }
+      case "presence": this.present = m.present; this.names = m.names; break;
+      case "gameover": this.setClock(m.clock); this.setResult(m.result); break;
+      case "draw-offer": if (m.by !== this.myColor) { this.drawOffer = m.by; sfx.notify(); this.onDrawOffer?.(); } break;
+      case "draw-declined": this.drawOffer = null; this.onToast?.("引き分けの提案は断られました"); break;
+      case "rematch-offer": if (m.by !== this.myColor) { this.rematchOffer = m.by; sfx.notify(); this.onToast?.("相手が再戦を申し込んでいます"); } break;
+      case "error": this.onToast?.(m.message); break;
+      case "pong": break;
+    }
+  }
+
+  private rebuild(moves: MoveInput[]) {
+    this.chess = new Chess(); this.moveList = []; this.anim = null; this.particles = []; this.held = null; this.input.holding = false;
+    this.lastMove = null;
+    for (const mv of moves) { const m = this.chess.move(mv); this.moveList.push(m.san); this.lastMove = { from: m.from, to: m.to }; }
+    this.serverCount = moves.length;
+  }
+
+  /** 相手が動いた時、掴んでいる駒がまだ有効か確認する(取られていたら戻す) */
+  private revalidateHeld() {
+    if (!this.held) return;
+    const p = this.chess.get(this.held.from as never);
+    if (!p || p.color !== this.held.color || !this.canMoveNow(p.color)) { this.held = null; this.input.holding = false; return; }
+    this.held.targets = new Set(this.chess.moves({ square: this.held.from as never, verbose: true }).map((m) => m.to));
+  }
+
+  private setClock(c: ClockState) { this.clockBase = { ...c, at: performance.now() }; }
+
+  /** 表示用の残り時間(ms)。running中は手番側が受信時刻から減っていく。時間無制限ならnull */
+  displayClock(): { w: number; b: number; turn: Color; running: boolean } | null {
+    if (this.timeControl.baseMs <= 0) return null;
+    const { w, b, turn, running, at } = this.clockBase;
+    const d = running && !this.result ? performance.now() - at : 0;
+    return { w: Math.max(0, w - (turn === "w" ? d : 0)), b: Math.max(0, b - (turn === "b" ? d : 0)), turn, running };
+  }
+
+  /** 盤面に出す1行の状態 */
+  statusText(): string {
+    if (this.mode.kind === "online") {
+      if (this.netStatus === "connecting") return "サーバーに接続しています…";
+      if (this.netStatus === "reconnecting") return "接続が切れました。再接続しています…";
+      if (this.netStatus === "closed") return "切断されました(別の場所で開いた可能性があります)";
+      if (!this.present.w || !this.present.b) {
+        if (!this.result && this.moveList.length > 0) return "相手が切断しました。戻るのを待っています…";
+        return this.names.w && this.names.b ? "相手が切断しています" : "相手の参加を待っています…";
+      }
+    }
+    if (this.result) return "";
+    if (this.thinking) return "AIが考えています…";
+    const check = this.chess.inCheck() ? " — チェック!" : "";
+    if (this.mode.kind === "local") return `${this.chess.turn() === "w" ? "白" : "黒"}の番${check}`;
+    if (!this.myColor) return `${this.chess.turn() === "w" ? "白" : "黒"}の番(観戦中)${check}`;
+    return (this.chess.turn() === this.myColor ? "あなたの番" : "相手の番") + check;
+  }
+
+  get kingInCheckSquare(): string | null {
+    if (!this.chess.inCheck()) return null;
+    const b = this.chess.board();
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const p = b[r][c]; if (p?.type === "k" && p.color === this.chess.turn()) return sqName(c, r); }
+    return null;
+  }
+}

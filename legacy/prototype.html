@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hand Chess</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111; color: #eee; font: 15px/1.6 system-ui, sans-serif; }
+  #wrap { display: flex; gap: 24px; padding: 24px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+  canvas { width: min(90vw, 720px); height: auto; aspect-ratio: 1; border-radius: 8px; background: #000; touch-action: none; }
+  #side { width: 280px; }
+  h1 { margin: 0 0 8px; font-size: 22px; }
+  #status { min-height: 3em; color: #9cf; }
+  #log { padding-left: 1.6em; max-height: 240px; overflow: auto; margin: 8px 0; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  select, input, button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #555; background: #222; color: #eee; }
+  button { cursor: pointer; }
+  input { width: 90px; text-transform: uppercase; }
+  small { color: #888; }
+  #online { display: none; }
+  #code { font-size: 22px; letter-spacing: .2em; color: #fc6; }
+  #v { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+</style>
+<body>
+<div id="wrap">
+  <canvas id="c" width="720" height="720"></canvas>
+  <div id="side">
+    <h1>Hand Chess</h1>
+    <div id="status">起動中…</div>
+    <div class="row">
+      <select id="mode">
+        <option value="ai">AI (Stockfish)</option>
+        <option value="local">同じPCで対人</option>
+        <option value="online">オンライン対人</option>
+      </select>
+      <select id="level">
+        <option value="2">弱い</option>
+        <option value="9" selected>普通</option>
+        <option value="17">強い</option>
+      </select>
+    </div>
+    <div id="online">
+      <div class="row"><button id="host">部屋を作る</button><span id="code"></span></div>
+      <div class="row"><input id="joinCode" maxlength="4" placeholder="コード"><button id="join">参加</button></div>
+    </div>
+    <div class="row"><button id="reset">最初から</button><button id="view3d">3D視点 ON/OFF</button></div>
+    <div class="row"><button id="explain">解説表示 (E)</button><button id="filt">フィルタ ON/OFF (F)</button></div>
+    <div class="row"><button id="calib">キャリブレーション (C)</button></div>
+    <ol id="log"></ol>
+    <p><small>親指と人差し指をつまむ(ピンチ)で駒を掴み、離すと置く。カメラが使えない場合はマウスでも操作可。D キーでデバッグ表示。</small></p>
+  </div>
+</div>
+<video id="v" playsinline muted></video>
+
+<script type="module">
+import { Chess } from "https://cdn.jsdelivr.net/npm/chess.js@1.4.0/+esm";
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("c"), ctx = canvas.getContext("2d");
+const video = $("v"), statusEl = $("status"), logEl = $("log");
+const S = canvas.width, SQ = S / 8;
+
+// ---------- One Euro Filter (ジッター除去) ----------
+class OneEuro {
+  constructor(minCutoff = 1.2, beta = 0.02, dCutoff = 1) { Object.assign(this, { minCutoff, beta, dCutoff, x: null, dx: 0, t: null }); }
+  static alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  filter(v, t) {
+    if (this.x === null) { this.x = v; this.t = t; return v; }
+    const dt = Math.max((t - this.t) / 1000, 1e-3);
+    this.dx += OneEuro.alpha(this.dCutoff, dt) * ((v - this.x) / dt - this.dx);
+    this.x += OneEuro.alpha(this.minCutoff + this.beta * Math.abs(this.dx), dt) * (v - this.x);
+    this.t = t; return this.x;
+  }
+  reset() { this.x = null; }
+}
+const fx = new OneEuro(), fy = new OneEuro();
+
+// ---------- 疑似3D: 盤面平面の透視投影 と その逆変換 ----------
+const K = 0.8, F = 1100;
+let theta = 0, thetaTarget = 0.52;         // 盤の傾き(rad)
+const off = () => -theta * 63;             // 傾けた分の縦位置補正
+function project(x, y, h = 0) {            // 盤面(x,y,高さh) -> 画面。奥(y小)ほど遠く小さい
+  const u = (x - S / 2) * K, v = (y - S / 2) * K, hh = h * K;
+  const c = Math.cos(theta), s = Math.sin(theta);
+  const yy = v * c - hh * s, zz = -v * s - hh * c, sc = F / (F + zz);
+  return { x: S / 2 + u * sc, y: S / 2 + off() + yy * sc, s: sc };
+}
+function unproject(sx, sy) {               // 画面座標 -> 盤面(h=0)座標
+  const c = Math.cos(theta), s = Math.sin(theta);
+  const py = sy - S / 2 - off(), px = sx - S / 2;
+  const v = py * F / (F * c + py * s), u = px * (F - v * s) / F;
+  return { x: u / K + S / 2, y: v / K + S / 2 };
+}
+
+// ---------- フォールバック用の自作エンジン (minimax + alpha-beta) ----------
+const VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
+function evaluate(g) {
+  let s = 0; const b = g.board();
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const p = b[r][c]; if (!p) continue;
+    const v = VAL[p.type] + (p.type === "k" ? 0 : 10 - (Math.abs(3.5 - r) + Math.abs(3.5 - c)) * 2.5);
+    s += p.color === "w" ? v : -v;
+  }
+  return s;
+}
+const order = (ms) => ms.sort((a, b) => (b.captured ? VAL[b.captured] * 10 - VAL[b.piece] : 0) - (a.captured ? VAL[a.captured] * 10 - VAL[a.piece] : 0));
+function search(g, depth, alpha, beta) {
+  const moves = g.moves({ verbose: true });
+  if (!moves.length) return g.inCheck() ? (g.turn() === "w" ? -99999 - depth : 99999 + depth) : 0;
+  if (depth === 0) return evaluate(g);
+  const white = g.turn() === "w"; let best = white ? -Infinity : Infinity;
+  for (const m of order(moves)) {
+    g.move(m); const v = search(g, depth - 1, alpha, beta); g.undo();
+    if (white) { best = Math.max(best, v); alpha = Math.max(alpha, v); } else { best = Math.min(best, v); beta = Math.min(beta, v); }
+    if (beta <= alpha) break;
+  }
+  return best;
+}
+function fallbackMove(g) {
+  const white = g.turn() === "w"; let best = null, bv = white ? -Infinity : Infinity;
+  for (const m of order(g.moves({ verbose: true }))) {
+    g.move(m); const v = search(g, 2, -Infinity, Infinity) + Math.random() * 4; g.undo();
+    if (white ? v > bv : v < bv) { bv = v; best = m; }
+  }
+  return best && { from: best.from, to: best.to, promotion: best.promotion };
+}
+
+// ---------- Stockfish (WASM, Web Worker) ----------
+let sf = null, sfReady = false, sfResolve = null;
+function initEngine() {
+  try {
+    sf = new Worker("engine/stockfish-nnue-16-single.js");
+    sf.onmessage = (e) => {
+      const l = String(e.data);
+      if (l === "uciok") sf.postMessage("isready");
+      else if (l === "readyok") sfReady = true;
+      else if (l.startsWith("bestmove") && sfResolve) { const r = sfResolve; sfResolve = null; r(l.split(" ")[1]); }
+    };
+    sf.onerror = () => { sf = null; sfReady = false; };
+    sf.postMessage("uci");
+  } catch { sf = null; }
+}
+function engineMove(fen, skill) {
+  return new Promise((resolve) => {
+    if (!sf || !sfReady) return resolve(null);
+    const timer = setTimeout(() => { sfResolve = null; resolve(null); }, 8000);
+    sfResolve = (mv) => { clearTimeout(timer); resolve(mv); };
+    sf.postMessage(`setoption name Skill Level value ${skill}`);
+    sf.postMessage(`position fen ${fen}`);
+    sf.postMessage("go movetime 700");
+  });
+}
+async function aiMove() {
+  const uci = await engineMove(game.fen(), +$("level").value);
+  if (uci && uci !== "(none)") return { from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] };
+  return fallbackMove(game);
+}
+
+// ---------- ゲーム状態 ----------
+const game = new Chess();
+// 白も黒も同じ塗りつぶしの形にして、色だけで陣営を区別する (︎: 絵文字化を防ぐ)
+const SOLID = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+const GLYPH = Object.fromEntries(["w", "b"].flatMap((c) => Object.entries(SOLID).map(([t, g]) => [c + t, g + "︎"])));
+let mode = "ai", myColor = "w", flip = false;
+let held = null, thinking = false, lastMove = null, message = "", camNote = "";
+let conn = null, peer = null;
+
+const cursor = { x: -1, y: -1, pinch: false, source: "none", seen: 0 };
+const hist = [];                            // カーソル履歴 (ピンチ動作のズレ補正用)
+const pushHist = (t) => { hist.push({ t, x: cursor.x, y: cursor.y }); while (hist.length && t - hist[0].t > 500) hist.shift(); };
+const posAt = (t) => { let r = hist[0] || cursor; for (const h of hist) { if (h.t <= t) r = h; else break; } return r; };
+
+const sqName = (c, r) => "abcdefgh"[c] + (8 - r);
+function sqAt(x, y) {
+  const dc = Math.floor(x / SQ), dr = Math.floor(y / SQ);
+  if (dc < 0 || dc > 7 || dr < 0 || dr > 7) return null;
+  return sqName(flip ? 7 - dc : dc, flip ? 7 - dr : dr);
+}
+function sqCenter(sq) {                     // マス中心(表示座標)
+  const c = "abcdefgh".indexOf(sq[0]), r = 8 - +sq[1];
+  return { x: ((flip ? 7 - c : c) + 0.5) * SQ, y: ((flip ? 7 - r : r) + 0.5) * SQ };
+}
+function snapTarget(pos) {                  // 近い合法マスに吸着
+  if (!held) return sqAt(pos.x, pos.y);
+  let best = null, bd = SQ * 0.7;
+  for (const t of held.targets) { const c = sqCenter(t), d = Math.hypot(c.x - pos.x, c.y - pos.y); if (d < bd) { bd = d; best = t; } }
+  return best || sqAt(pos.x, pos.y);
+}
+
+function logMove(m) {
+  const li = document.createElement("li");
+  li.textContent = `${m.color === "w" ? "白" : "黒"}: ${m.san}`;
+  logEl.appendChild(li); logEl.scrollTop = logEl.scrollHeight;
+}
+function endCheck() {
+  if (game.isCheckmate()) message = `チェックメイト! ${game.turn() === "w" ? "黒" : "白"}の勝ち 🎉`;
+  else if (game.isDraw()) message = "引き分け";
+  else message = game.inCheck() ? "チェック!" : "";
+  return game.isGameOver();
+}
+function canMoveNow(color) {
+  if (thinking || game.isGameOver() || game.turn() !== color) return false;
+  if (mode === "online") return !!conn && color === myColor;
+  if (mode === "ai") return color === "w";
+  return true;
+}
+function tryGrab(sq) {
+  if (held || !sq) return false;
+  const p = game.get(sq);
+  if (!p || !canMoveNow(p.color)) return false;
+  const targets = new Set(game.moves({ square: sq, verbose: true }).map((m) => m.to));
+  if (!targets.size) return false;
+  held = { from: sq, glyph: GLYPH[p.color + p.type], color: p.color, targets };
+  sfx.grab(); return true;
+}
+// ---------- 演出: 効果音 (WebAudio合成) / パーティクル / 画面の揺れ / 駒の移動アニメーション ----------
+let ac = null;
+function audio() {
+  if (!ac) { try { ac = new AudioContext(); } catch { return null; } }
+  if (ac.state === "suspended") ac.resume();
+  return ac;
+}
+addEventListener("pointerdown", audio); addEventListener("keydown", audio);   // ブラウザの仕様で、最初にクリック/キー操作が要る
+function tone(freq, dur, type = "sine", vol = 0.15, slideTo) {
+  const a = audio(); if (!a || a.state !== "running") return;
+  const o = a.createOscillator(), g = a.createGain(), t = a.currentTime;
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(a.destination); o.start(t); o.stop(t + dur);
+}
+const sfx = {
+  grab: () => tone(880, 0.06, "triangle", 0.08),
+  place: () => tone(200, 0.12, "sine", 0.3, 90),
+  capture: () => { tone(150, 0.22, "sawtooth", 0.18, 50); tone(600, 0.08, "square", 0.05, 200); },
+  check: () => { tone(660, 0.12, "square", 0.07); setTimeout(() => tone(880, 0.18, "square", 0.07), 120); },
+  end: () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.4, "triangle", 0.12), i * 140)),
+};
+const parts = []; let shake = 0, anim = null;
+function burst(sq, capturedColor) {
+  const c = sqCenter(sq), cols = ["#fc6", "#f96", capturedColor === "w" ? "#fff" : "#8af"];
+  for (let i = 0; i < 30; i++) parts.push({ x: c.x, y: c.y, z: SQ * 0.4, vx: (Math.random() - 0.5) * 7, vy: (Math.random() - 0.5) * 7, vz: Math.random() * 9 + 3, life: 1, color: cols[i % 3] });
+  shake = 9;
+}
+function landFx(m) {                       // 駒が着地した瞬間の演出
+  if (m.captured) { sfx.capture(); burst(m.to, m.color === "w" ? "b" : "w"); } else sfx.place();
+  if (m.san.endsWith("#")) sfx.end(); else if (m.san.endsWith("+")) sfx.check();
+}
+function applyMove(mv, dropFrom) {         // dropFrom: 自分で掴んで置いた時の指の位置(そこから着地させる)
+  if (anim) { landFx(anim.m); anim = null; }
+  const m = game.move(mv); lastMove = m; logMove(m);
+  const a = sqCenter(m.from), b = sqCenter(m.to), p = game.get(m.to);
+  anim = { m, sq: m.to, glyph: GLYPH[p.color + p.type], color: p.color, own: !!dropFrom, t0: performance.now(), dur: dropFrom ? 160 : 380,
+    x0: dropFrom ? dropFrom.x : a.x, y0: dropFrom ? dropFrom.y : a.y, x1: b.x, y1: b.y };
+  return m;
+}
+async function drop(sq) {
+  if (!held) return;
+  const h = held; held = null;
+  if (!sq || !h.targets.has(sq)) return;
+  const mv = { from: h.from, to: sq, promotion: "q" };
+  applyMove(mv, { x: cursor.x, y: cursor.y });
+  if (mode === "online" && conn) conn.send({ t: "move", ...mv });
+  if (endCheck()) return;
+  if (mode === "ai") {
+    thinking = true; message = "AI思考中…";
+    const ai = await aiMove();
+    if (ai) { try { applyMove(ai); } catch { /* 不正手は無視 */ } }
+    thinking = false; endCheck();
+  }
+}
+function resetLocal() { anim = null; parts.length = 0; game.reset(); held = null; lastMove = null; message = ""; thinking = false; logEl.innerHTML = ""; }
+$("reset").onclick = () => { resetLocal(); if (mode === "online" && conn) conn.send({ t: "reset" }); };
+$("view3d").onclick = () => { thetaTarget = thetaTarget ? 0 : 0.52; };
+
+// ---------- オンライン対戦 (PeerJS / WebRTC P2P) ----------
+const loadPeer = () => new Promise((ok, ng) => {
+  if (window.Peer) return ok();
+  const s = document.createElement("script");
+  s.src = "https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"; s.onload = ok; s.onerror = ng; document.head.appendChild(s);
+});
+function closeOnline() { try { conn?.close(); peer?.destroy(); } catch {} conn = null; peer = null; $("code").textContent = ""; }
+function setupConn(c, color) {
+  conn = c; myColor = color; flip = color === "b"; resetLocal();
+  c.on("data", (d) => {
+    if (d.t === "reset") resetLocal();
+    else if (d.t === "move") { try { applyMove({ from: d.from, to: d.to, promotion: d.promotion }); endCheck(); } catch { message = "同期エラー"; } }
+  });
+  c.on("close", () => { conn = null; message = "相手が切断しました"; });
+}
+$("host").onclick = async () => {
+  closeOnline();
+  try { await loadPeer(); } catch { message = "PeerJSを読み込めません"; return; }
+  const code = Array.from({ length: 4 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.random() * 32 | 0]).join("");
+  peer = new Peer("hchess-" + code);
+  peer.on("open", () => { $("code").textContent = code; message = "相手の参加を待っています…"; });
+  peer.on("connection", (c) => c.on("open", () => setupConn(c, "w")));
+  peer.on("error", (e) => { message = "接続エラー: " + e.type; });
+};
+$("join").onclick = async () => {
+  const code = $("joinCode").value.trim().toUpperCase(); if (code.length !== 4) return;
+  closeOnline();
+  try { await loadPeer(); } catch { message = "PeerJSを読み込めません"; return; }
+  peer = new Peer();
+  peer.on("open", () => { const c = peer.connect("hchess-" + code); c.on("open", () => setupConn(c, "b")); });
+  peer.on("error", (e) => { message = "接続エラー: " + e.type; });
+};
+$("mode").onchange = () => {
+  mode = $("mode").value; closeOnline(); myColor = "w"; flip = false; resetLocal();
+  $("online").style.display = mode === "online" ? "block" : "none";
+  $("level").style.display = mode === "ai" ? "" : "none";
+  if (mode === "online") message = "「部屋を作る」か、コードを入れて「参加」";
+};
+
+// ---------- 入力: ピンチ (ヒステリシス + 遅延補正 + デバウンス) ----------
+const LAG = 120;                            // つまむ動作で指がずれる前の位置を使う(ms)
+function setPinch(next, at) {               // at: 位置を参照する時刻(省略時は 現在-LAG)
+  if (next === cursor.pinch) return;
+  cursor.pinch = next; relFrames = 0; relStart = 0;
+  const past = posAt(at ?? performance.now() - (cursor.source === "hand" ? LAG : 0));
+  if (next) { if (!tryGrab(sqAt(past.x, past.y))) tryGrab(sqAt(cursor.x, cursor.y)); }
+  else drop(snapTarget(past));
+}
+function mouseUpdate(e) {
+  const r = canvas.getBoundingClientRect();
+  const p = unproject((e.clientX - r.left) / r.width * S, (e.clientY - r.top) / r.height * S);
+  cursor.x = p.x; cursor.y = p.y; cursor.source = "mouse"; pushHist(performance.now());
+}
+canvas.addEventListener("pointermove", (e) => { if (performance.now() - cursor.seen > 500) mouseUpdate(e); });
+canvas.addEventListener("pointerdown", (e) => { if (performance.now() - cursor.seen > 500) { mouseUpdate(e); setPinch(true); } });
+addEventListener("pointerup", () => { if (cursor.source === "mouse") setPinch(false); });
+
+// ---------- MediaPipe Hand Landmarker ----------
+let landmarker = null, lastVideoTime = -1, lastHand = null, pinchRatio = 0, grabFrames = 0;
+let relFrames = 0, relStart = 0, lostSince = 0, imgRatio = 0;
+const LOST_GRACE = 400, RELEASE_FRAMES = 3;   // 検出が途切れても掴みを維持する時間(ms) / 離す確定に必要な連続フレーム数
+let dbg = false, fps = 0, fpsCount = 0, fpsT = performance.now();
+let explain = false, useFilter = true;
+const rawTrail = [], filtTrail = [], ratioHist = [];   // 解説表示用の履歴
+const push = (a, v, n) => { a.push(v); if (a.length > n) a.shift(); };
+const toggleExplain = () => { explain = !explain; }, toggleFilter = () => { useFilter = !useFilter; };
+$("explain").onclick = toggleExplain; $("filt").onclick = toggleFilter;
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === "d") dbg = !dbg; else if (k === "e") toggleExplain(); else if (k === "f") toggleFilter(); else if (k === "c") startCalib();
+});
+let GRAB = 0.2, RELEASE = 0.4, RELEASE_HELD = 0.55;
+try { const s = JSON.parse(localStorage.getItem("pinchThr2")); if (s) ({ GRAB, RELEASE, RELEASE_HELD } = s); } catch {}
+
+// ---------- キャリブレーション: 「開く」「つまむ」を2.5秒ずつ測り、その中央値から閾値を決める ----------
+let calib = null, msgTimer = 0;
+const CAL_SETTLE = 800, CAL_MS = 2500;
+function say(text, ms = 3500) { message = text; clearTimeout(msgTimer); if (ms) msgTimer = setTimeout(() => { if (message === text) message = ""; }, ms); }
+function startCalib() {
+  if (cursor.source !== "hand") return say("手をカメラに映してから実行してください");
+  held = null; cursor.pinch = false; grabFrames = 0;
+  calib = { step: "open", t0: performance.now(), samples: [], text: "" };
+}
+function calibTick(t) {
+  const el = t - calib.t0, left = Math.max(0, Math.ceil((CAL_SETTLE + CAL_MS - el) / 1000));
+  calib.text = calib.step === "open" ? `手を大きく開いてください… ${left}` : `親指と人差し指をつまんでください… ${left}`;
+  if (el > CAL_SETTLE) calib.samples.push(pinchRatio);           // 動かし始めの値は捨てる
+  if (el < CAL_SETTLE + CAL_MS) return;
+  const s = calib.samples.sort((a, b) => a - b), med = s[s.length >> 1];
+  if (calib.step === "open") { calib = { step: "pinch", t0: t, samples: [], open: med, text: "" }; return; }
+  const open = calib.open, range = open - med; calib = null;
+  if (!(range > 0.25)) return say(`差が小さすぎます(開く${open.toFixed(2)} / つまむ${med.toFixed(2)})。もう一度どうぞ`, 6000);
+  GRAB = med + 0.15 * range; RELEASE = med + 0.45 * range; RELEASE_HELD = med + 0.6 * range;   // つまみ値から開き値への15/45/60%位置。掴みは「ほぼ完全に触れた時」だけ
+  try { localStorage.setItem("pinchThr2", JSON.stringify({ GRAB, RELEASE, RELEASE_HELD })); } catch {}
+  say(`設定完了: 掴む<${GRAB.toFixed(2)}  離す>${RELEASE.toFixed(2)}  (つまむ${med.toFixed(2)} / 開く${open.toFixed(2)})`, 6000);
+}
+$("calib").onclick = startCalib;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+const toScreen = (nx, ny) => [Math.min(1, Math.max(0, ((1 - nx) - 0.1) / 0.8)) * S, Math.min(1, Math.max(0, (ny - 0.1) / 0.8)) * S];
+
+async function initCamera() {
+  try {
+    if (!navigator.mediaDevices) throw new Error(`カメラはHTTPSまたはlocalhostでのみ使えます。http://localhost:${location.port} で開き直してください`);
+    statusEl.textContent = "モデル読み込み中…";
+    const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    landmarker = await HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: "GPU" },
+      runningMode: "VIDEO", numHands: 1,
+      minHandDetectionConfidence: 0.4, minHandPresenceConfidence: 0.4, minTrackingConfidence: 0.4,   // 既定0.5より緩めて検出落ちを減らす
+    });
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    await video.play();
+  } catch (e) {
+    console.error(e); camNote = "カメラ/モデルを使えません(マウスで操作可): " + e.message;
+  }
+}
+function processHand(t) {
+  if (!landmarker || video.readyState < 2 || video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime; fpsCount++;
+  const res = landmarker.detectForVideo(video, t), lm = res.landmarks[0], wl = res.worldLandmarks?.[0];
+  lastHand = lm || null;
+  if (!lm) {
+    if (cursor.source !== "hand") return;
+    lostSince ||= t;
+    if (t - lostSince < LOST_GRACE) return;              // 一瞬の検出落ちは無視 (掴んだ駒はその場に保持)
+    fx.reset(); fy.reset(); grabFrames = 0; lostSince = 0;
+    if (calib) { calib = null; say("手を見失ったので中断しました"); }
+    if (held) { held = null; cursor.pinch = false; message = "手を見失ったので駒を戻しました"; }   // 意図しない場所に置かない
+    cursor.pinch = false; cursor.source = "none"; return;
+  }
+  lostSince = 0; cursor.source = "hand"; cursor.seen = performance.now();
+  // 親指先(4)と人差し指先(8)の中点をカーソルに (つまむ動作でずれにくい)
+  const [sx, sy] = toScreen((lm[4].x + lm[8].x) / 2, (lm[4].y + lm[8].y) / 2);
+  const fxv = fx.filter(sx, t), fyv = fy.filter(sy, t);        // フィルタは常に更新し、ON/OFFは使う値の切替だけ
+  const p = unproject(useFilter ? fxv : sx, useFilter ? fyv : sy);
+  cursor.x = Math.min(S, Math.max(0, p.x)); cursor.y = Math.min(S, Math.max(0, p.y)); pushHist(t);
+  // ピンチ比: 手の向きや遠近の影響が小さい3Dワールド座標(メートル)で計算。無ければ画像座標にフォールバック
+  // 手のサイズは「手のひら幅(5-17)」と「手のひら長(0-9)×0.75」の平均。向きによってどちらかが縮んで見えても影響を半減できる
+  imgRatio = dist(lm[4], lm[8]) / ((dist(lm[5], lm[17]) + 0.75 * dist(lm[0], lm[9])) / 2);
+  // 3D比は指が奥行き方向に並ぶとzノイズで過大になり、画像比は逆に過小になり得る。小さい方を採用して「つまめない」を防ぐ
+  pinchRatio = wl ? Math.min(imgRatio, dist3(wl[4], wl[8]) / ((dist3(wl[5], wl[17]) + 0.75 * dist3(wl[0], wl[9])) / 2)) : imgRatio;
+  push(rawTrail, [sx, sy], 40); push(filtTrail, [fxv, fyv], 40); push(ratioHist, [pinchRatio, cursor.pinch], 160);
+  if (calib) { calibTick(t); return; }                            // 測定中は掴み判定を止める
+  if (!cursor.pinch) {
+    grabFrames = pinchRatio < GRAB ? grabFrames + 1 : 0;          // 2フレーム連続で掴み確定
+    if (grabFrames >= 2) setPinch(true);
+  } else if (pinchRatio > (held ? RELEASE_HELD : RELEASE)) {
+    relStart ||= t;                                               // 離し始めた時刻を記録
+    if (++relFrames >= RELEASE_FRAMES) { grabFrames = 0; setPinch(false, relStart - 40); }   // 離す動作で指が動く前の位置に置く
+  } else { relFrames = 0; relStart = 0; }                        // 途中で戻ったら「離す」はキャンセル(1フレームの誤検出を無視)
+}
+
+// ---------- 描画 ----------
+function quad(x, y, w, h) {
+  const p = [project(x, y), project(x + w, y), project(x + w, y + h), project(x, y + h)];
+  ctx.beginPath(); ctx.moveTo(p[0].x, p[0].y); for (let i = 1; i < 4; i++) ctx.lineTo(p[i].x, p[i].y); ctx.closePath();
+}
+function glyph(g, x, y, sc, color, size) {
+  ctx.font = `${size * sc}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineJoin = "round"; ctx.lineWidth = 6; ctx.strokeStyle = color === "w" ? "#1b1b1b" : "#e6ecff"; ctx.strokeText(g, x, y);
+  ctx.fillStyle = color === "w" ? "#fff6dc" : "#1a1a2e"; ctx.fillText(g, x, y);
+}
+// 足元の台座: 白=アイボリー / 黒=濃紺 の円盤 + 縁取りで、どのマスでも陣営が一目で分かる
+function shadow(x, y, r, color) {
+  const q = project(x, y), rx = r * K * q.s * (color ? 1.25 : 1), ry = rx * (0.4 + 0.6 * Math.cos(theta));
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(q.x, q.y + 2, rx, ry, 0, 0, 7); ctx.fill();
+  if (!color) return;
+  ctx.fillStyle = color === "w" ? "#f4e7c0" : "#26264a"; ctx.beginPath(); ctx.ellipse(q.x, q.y, rx, ry, 0, 0, 7); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = color === "w" ? "#fff" : "#7d8cff"; ctx.stroke();
+}
+// LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄)
+function drawExplain() {
+  const line = (pts, color) => {
+    if (pts.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
+  };
+  line(rawTrail, "rgba(255,90,90,.95)"); line(filtTrail, "rgba(90,220,255,.95)");
+  if (hist.length) {
+    const past = posAt(performance.now() - LAG), q = project(past.x, past.y);
+    ctx.strokeStyle = "#fd3"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(q.x, q.y, 14, 0, 7); ctx.stroke();
+  }
+
+  const gx = 12, gy = 36, gw = 260, gh = 52, ymax = 0.8;             // ピンチ比グラフ(盤の奥側の空き領域)
+  const Y = (v) => gy + gh - Math.min(v, ymax) / ymax * gh;
+  ctx.fillStyle = "rgba(0,0,0,.7)"; ctx.fillRect(gx - 6, gy - 22, gw + 12, gh + 30);
+  [[GRAB, "#6f6", "掴む"], [RELEASE, "#fa4", "離す"], [RELEASE_HELD, "#f66", "離す(掴み中)"]].forEach(([v, c, n]) => {
+    ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(gx, Y(v)); ctx.lineTo(gx + gw, Y(v)); ctx.stroke();
+    ctx.fillStyle = c; ctx.font = "11px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "bottom"; ctx.fillText(n, gx + gw, Y(v) - 1);
+  });
+  ratioHist.forEach(([v, on], i) => { if (on) { ctx.fillStyle = "rgba(255,90,90,.25)"; ctx.fillRect(gx + i * gw / 160, gy, gw / 160 + 1, gh); } });
+  line(ratioHist.map(([v], i) => [gx + i * gw / 160, Y(v)]), "#fff");
+  ctx.fillStyle = "#fff"; ctx.font = "12px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  ctx.fillText(`ピンチ比(指先距離/手のひら幅)  フィルタ:${useFilter ? "ON" : "OFF"}  赤=生 水=補正後 黄=遅延補正位置`, gx, gy - 6);
+}
+function draw() {
+  theta += (thetaTarget - theta) * 0.12;
+  const tNow = performance.now();
+  ctx.save();
+  if (shake > 0.3) { ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); shake *= 0.86; } else shake = 0;
+  ctx.clearRect(0, 0, S, S);
+  if (video.readyState >= 2) { ctx.save(); ctx.translate(S, 0); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, S, S); ctx.restore(); }
+  ctx.fillStyle = "rgba(0,0,0,.45)"; ctx.fillRect(0, 0, S, S);
+
+  const target = cursor.x >= 0 ? snapTarget(cursor) : null;
+  const b = game.board(), size = SQ * 0.9 * K;
+  let kingSq = null;                                            // チェックされている王のマス
+  if (game.inCheck()) for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const p = b[r][c]; if (p?.type === "k" && p.color === game.turn()) kingSq = sqName(c, r); }
+  for (let dr = 0; dr < 8; dr++) for (let dc = 0; dc < 8; dc++) {
+    const c = flip ? 7 - dc : dc, r = flip ? 7 - dr : dr, sq = sqName(c, r);
+    ctx.fillStyle = (dr + dc) % 2 ? "rgba(40,55,85,.9)" : "rgba(215,222,235,.85)";
+    quad(dc * SQ, dr * SQ, SQ, SQ); ctx.fill();
+    if (sq === kingSq) { ctx.fillStyle = `rgba(255,60,60,${0.3 + 0.2 * Math.sin(tNow / 120)})`; ctx.fill(); }
+    if (lastMove && (sq === lastMove.from || sq === lastMove.to)) { ctx.fillStyle = "rgba(255,220,80,.4)"; ctx.fill(); }
+    if (held?.targets.has(sq)) { ctx.fillStyle = "rgba(80,220,120,.4)"; ctx.fill(); }
+    if (sq === target && !thinking) { ctx.strokeStyle = cursor.pinch ? "#f66" : "#6cf"; ctx.lineWidth = 3; ctx.stroke(); }
+  }
+  for (let dr = 0; dr < 8; dr++) for (let dc = 0; dc < 8; dc++) {   // 奥の段から描く
+    const c = flip ? 7 - dc : dc, r = flip ? 7 - dr : dr, p = b[r][c];
+    if (!p || (held && sqName(c, r) === held.from) || (anim && sqName(c, r) === anim.sq)) continue;
+    const cx = (dc + 0.5) * SQ, cy = (dr + 0.5) * SQ, q = project(cx, cy, SQ * 0.38);
+    shadow(cx, cy, SQ * 0.3, p.color); glyph(GLYPH[p.color + p.type], q.x, q.y, q.s, p.color, size);
+  }
+  if (anim) {                                                   // 移動中の駒 (相手の手は弧を描く / 自分の手は指の位置から着地)
+    const p = Math.min(1, (tNow - anim.t0) / anim.dur), e = 1 - Math.pow(1 - p, 3);
+    const x = anim.x0 + (anim.x1 - anim.x0) * e, y = anim.y0 + (anim.y1 - anim.y0) * e;
+    const h = SQ * 0.38 + (anim.own ? (1 - e) * SQ * 0.92 : Math.sin(Math.PI * p) * SQ * 0.9);
+    shadow(x, y, SQ * 0.3, anim.color); const q = project(x, y, h); glyph(anim.glyph, q.x, q.y, q.s, anim.color, size);
+    if (p >= 1) { landFx(anim.m); anim = null; }
+  }
+  if (held && cursor.x >= 0) {
+    shadow(cursor.x, cursor.y, SQ * 0.3, held.color);
+    const q = project(cursor.x, cursor.y, SQ * 1.3);
+    ctx.shadowColor = "#6cf"; ctx.shadowBlur = 26;                // 掴んでいる駒を光らせる
+    glyph(held.glyph, q.x, q.y, q.s, held.color, size * 1.15); ctx.shadowBlur = 0;
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {                 // パーティクル
+    const p = parts[i]; p.x += p.vx; p.y += p.vy; p.z += p.vz; p.vz -= 0.5; p.life -= 0.022;
+    if (p.z < 0) { p.z = 0; p.vz *= -0.4; }
+    if (p.life <= 0) { parts.splice(i, 1); continue; }
+    const q = project(p.x, p.y, p.z); ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 3.5 * q.s, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  if (lastHand) {
+    ctx.fillStyle = "rgba(120,220,255,.9)";
+    for (const p of lastHand) { const [x, y] = toScreen(p.x, p.y); ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill(); }
+  }
+  if (cursor.x >= 0) { const q = project(cursor.x, cursor.y); ctx.fillStyle = cursor.pinch ? "#f66" : "#6cf"; ctx.beginPath(); ctx.arc(q.x, q.y, cursor.pinch ? 7 : 11, 0, 7); ctx.fill(); }
+  if (explain) drawExplain();
+  if (game.isGameOver() && !anim) {                             // 終局バナー
+    ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(0, S / 2 - 70, S, 140);
+    ctx.font = "bold 46px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fc6"; ctx.fillText(message.replace(" 🎉", ""), S / 2, S / 2 - 10);
+    ctx.font = "20px sans-serif"; ctx.fillStyle = "#ddd"; ctx.fillText("「最初から」で再戦", S / 2, S / 2 + 38);
+  }
+  if (calib?.text) {                                            // 測定ガイド (観客にも見える大きさ)
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(0, S / 2 - 50, S, 100);
+    ctx.font = "bold 34px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = "#6cf"; ctx.fillText(calib.text, S / 2, S / 2);
+  }
+  ctx.restore();
+  if (dbg) {
+    ctx.fillStyle = "#0f0"; ctx.font = "14px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText(`detect ${fps}fps  pinch ${pinchRatio.toFixed(2)} (img ${imgRatio.toFixed(2)})  src ${cursor.source}  sf ${sfReady}`, 8, 8);
+  }
+  const now = performance.now(); if (now - fpsT > 1000) { fps = fpsCount; fpsCount = 0; fpsT = now; }
+
+  const turn = game.turn() === "w" ? "白" : "黒";
+  statusEl.textContent = (message || (mode === "online" && !conn ? "" : cursor.source === "hand" ? (cursor.pinch ? "掴んでいます" : `${turn}の番 — つまんで駒を掴む`) : `${turn}の番 — 手をカメラに映すかマウスで操作`)) + (camNote ? `\n${camNote}` : "");
+}
+function loop(t) { processHand(t); draw(); requestAnimationFrame(loop); }
+$("level").style.display = "";
+requestAnimationFrame(loop);
+initEngine();
+initCamera();
+</script>

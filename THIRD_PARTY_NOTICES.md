@@ -1,0 +1,24 @@
+# Third-party notices
+
+このプロジェクト自身のコード(`src/`, `scripts/` など)は MIT ライセンスです([LICENSE](LICENSE))。
+以下のサードパーティのコンポーネントは、それぞれのライセンスに従います。
+
+## Stockfish.js 16 (GPL-3.0)
+
+- 場所: `public/engine/stockfish-nnue-16-single.js`, `public/engine/stockfish-nnue-16-single.wasm`
+- 出典: https://github.com/nmrugg/stockfish.js (npm: `stockfish@16.0.0`)
+- ライセンス: GNU General Public License v3.0 — https://www.gnu.org/licenses/gpl-3.0.html
+- 元になったプロジェクト: [Stockfish](https://github.com/official-stockfish/Stockfish) (GPL-3.0)、[stockfish.wasm](https://github.com/niklasf/stockfish.wasm)
+- ソースコード: 上記リポジトリおよび npm パッケージで入手できます。
+
+Stockfish は独立したWeb Worker(別プロセス相当)として動き、`postMessage` でUCIコマンドをやり取りするだけです。
+Stockfish を含めて再配布する場合は、GPL-3.0 の条件(ソースの提供、ライセンス表示)に従ってください。
+
+## MediaPipe Tasks Vision (Apache-2.0)
+
+- npm: `@mediapipe/tasks-vision` — https://github.com/google-ai-edge/mediapipe
+- Hand Landmarker のモデル(`hand_landmarker.task`)は Google が公開しているものを `npm install` 時にダウンロードします。
+
+## chess.js (BSD-2-Clause)
+
+- https://github.com/jhlywa/chess.js — ルール判定・PGN/FEN処理に使用。
