@@ -4,7 +4,7 @@ import { Game, type GameMode } from "./game";
 import { HandInput } from "./hand";
 import { findMatch } from "./net";
 import { View } from "./projection";
-import { draw } from "./render";
+import { draw, drawOverlay } from "./render";
 import { store } from "./store";
 import { formatClock, reasonText, resultTitle } from "./text";
 import type { Color } from "../shared/protocol";
@@ -25,6 +25,9 @@ export class App {
   private bg = $<HTMLCanvasElement>("bg3d");
   private scene: { setMode(m: "title" | "menu"): void; start(): void; stop(): void } | null = null;
   private sceneFailed = false;
+  private gl: { view: View; render(g: Game): void } | null = null;      // 3D描画(使えない環境では2D描画にフォールバック)
+  private glFailed = false;
+  private glCanvas = $<HTMLCanvasElement>("board3d");
   private explain = false;
   private debug = false;
   private cancelMatch: (() => void) | null = null;
@@ -36,6 +39,8 @@ export class App {
 
   constructor() {
     this.input.attachMouse(this.canvas);
+    this.input.video.className = "cam-bg"; this.input.video.hidden = true;
+    this.canvas.parentElement!.prepend(this.input.video);
     this.input.onNotice = (m, ms) => this.toast(m, ms);
     this.game.onToast = (m, ms) => this.toast(m, ms);
 
@@ -100,6 +105,23 @@ export class App {
     this.game.start(mode, this.playerName);
     this.show("game");
     if (this.useCamera) void this.input.startCamera(); else this.input.stopCamera();
+    void this.ensureGL();
+  }
+
+  /** ゲーム画面の3D描画(three.jsは遅延読み込み)。失敗したら2D描画のまま遊べる */
+  private async ensureGL() {
+    if (this.gl || this.glFailed) return;
+    try {
+      const mod = await import("./render3d");
+      const gl = new mod.GameRenderer(this.glCanvas);
+      this.gl = gl;
+      this.game.view = gl.view;
+      this.glCanvas.hidden = false;
+      this.canvas.parentElement!.classList.add("gl");
+    } catch (e) {
+      console.warn("3D描画を使えません(2D表示で続けます)", e);
+      this.glFailed = true;
+    }
   }
 
   private goHome() {
@@ -251,7 +273,10 @@ export class App {
   private frame(t: number) {
     if (this.screen === "game") {
       this.input.update(t);
-      draw(this.ctx, this.game, { explain: this.explain, debug: this.debug });
+      const opts = { explain: this.explain, debug: this.debug };
+      if (this.gl) { this.gl.render(this.game); drawOverlay(this.ctx, this.game, opts); }
+      else draw(this.ctx, this.game, opts);
+      this.input.video.hidden = !(this.gl && this.input.cameraState === "ready");     // 3D時はDOMのビデオで映す
       this.updateHud();
     }
     requestAnimationFrame((n) => this.frame(n));

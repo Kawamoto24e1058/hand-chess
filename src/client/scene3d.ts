@@ -8,9 +8,10 @@ import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js"
  *  - 手: 親指と人差し指を2ボーンIKで駒の幅に合わせて動かし、「つまんで、運んで、離す」を繰り返す。
  */
 
-type PieceType = "p" | "r" | "n" | "b" | "q" | "k";
+export type PieceType = "p" | "r" | "n" | "b" | "q" | "k";
 export type SceneMode = "title" | "menu";
 
+export const UP_AXIS = new THREE.Vector3(0, 1, 0);
 const IVORY = 0xf3e6c8;
 const NAVY = 0x22254a;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -25,7 +26,7 @@ function lathe(pts: [number, number][], mat: THREE.Material): THREE.Mesh {
   return m;
 }
 
-function buildPiece(type: PieceType, mat: THREE.Material): THREE.Group {
+export function buildPiece(type: PieceType, mat: THREE.Material): THREE.Group {
   const g = new THREE.Group();
   const sphere = (r: number, y: number, sy = 1, x = 0, z = 0) => {
     const m = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 20), mat);
@@ -88,9 +89,9 @@ function buildPiece(type: PieceType, mat: THREE.Material): THREE.Group {
 }
 
 /** 手が駒をつまむ高さ(駒の底からの高さ) */
-const GRIP_Y: Record<PieceType, number> = { p: 0.6, r: 0.75, n: 0.85, b: 0.72, q: 0.85, k: 0.85 };
+export const GRIP_Y: Record<PieceType, number> = { p: 0.6, r: 0.75, n: 0.85, b: 0.72, q: 0.85, k: 0.85 };
 /** つまんだ時の指先の間隔(駒の厚み + 指の太さ) */
-const CLOSED_GAP: Record<PieceType, number> = { p: 0.5, r: 0.66, n: 0.52, b: 0.46, q: 0.56, k: 0.56 };
+export const CLOSED_GAP: Record<PieceType, number> = { p: 0.5, r: 0.66, n: 0.52, b: 0.46, q: 0.56, k: 0.56 };
 
 // ---------- 手 ----------
 class Seg {
@@ -151,12 +152,12 @@ function placeNail(nail: THREE.Mesh, tip: THREE.Vector3, dir: THREE.Vector3, out
   nail.position.copy(tip).addScaledVector(y, -0.075).addScaledVector(z, r * 0.78);
 }
 
-const HAND_YAW = -0.5;                  // 手を少し斜めに向けて、つまむ2本の指がカメラから見えるようにする
+export const HAND_YAW = -0.5;                  // 手を少し斜めに向けて、つまむ2本の指がカメラから見えるようにする
 const HAND_H = 1.35;                    // 手のひらの中心から、つまむ点までの縦の距離
 const GRIP_LOCAL = new THREE.Vector3(-0.42, -HAND_H, 0.18);   // つまむ点(手のひらの前、親指と人差し指の間)
 
 /** 手の見た目(手続き生成 / GLBモデル)の共通インターフェース */
-interface HandRig {
+export interface HandRig {
   readonly group: THREE.Group;
   /** 手のひらの中心から見た、つまむ点(親指と人差し指の間)の位置 */
   readonly grip: THREE.Vector3;
@@ -165,7 +166,7 @@ interface HandRig {
 
 interface Digit { root: THREE.Vector3; len: number[]; pole: THREE.Vector3; dir: THREE.Vector3; limb: Limb; nail: THREE.Mesh }
 
-class Hand implements HandRig {
+export class Hand implements HandRig {
   readonly group = new THREE.Group();
   readonly grip = GRIP_LOCAL;
   private index: Digit;
@@ -248,7 +249,7 @@ const GLB_GRIP = new THREE.Vector3(-0.3, -0.62, 0.55);         // 手のひら�
  * WebXRの標準の手モデルは、関節(骨)が同じ階層に並んでいて、各関節の位置と向きを直接指定できる。
  * 人差し指と親指はIKで求めた関節位置に、残りの指は握り込む姿勢に、骨の位置・向きを合わせる。
  */
-class GltfHand implements HandRig {
+export class GltfHand implements HandRig {
   readonly group = new THREE.Group();
   readonly grip = GLB_GRIP;
   private root = new THREE.Group();
@@ -258,7 +259,7 @@ class GltfHand implements HandRig {
   private nails: Record<string, THREE.Mesh> = {};
   private tmp = { mid: new THREE.Vector3(), j2: new THREE.Vector3(), tip: new THREE.Vector3() };
 
-  constructor(gltf: GLTF, skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material) {
+  constructor(gltf: GLTF, skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material, withArm: boolean) {
     // モデルを「指が下向き、手のひらが手前(+Z)」の座標系に置く: 回転(Y軸90°)・拡大・手のひらの中心を原点に
     this.root.rotation.y = Math.PI / 2;
     this.root.scale.setScalar(MODEL_SCALE);
@@ -277,15 +278,14 @@ class GltfHand implements HandRig {
       }
     });
 
-    // 前腕と袖口(手首の位置から斜め上へ)
+    // 前腕と袖口(手首の位置から斜め上へ)。ゲーム画面では盤を隠さないよう、手だけにする
     const wrist = this.local("wrist");
     const armDir = new THREE.Vector3(0.3, 1, -0.25).normalize();
     const arm = new Seg(0.3, 0.4, skin);
-    arm.set(wrist.clone().addScaledVector(armDir, -0.05), wrist.clone().addScaledVector(armDir, 5));
-    this.group.add(arm.mesh);
+    arm.set(wrist.clone().addScaledVector(armDir, -0.05), wrist.clone().addScaledVector(armDir, 16));
     const cuffMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.47, 0.42, 36), cuff);
     cuffMesh.position.copy(wrist).addScaledVector(armDir, 0.9); cuffMesh.quaternion.setFromUnitVectors(UP, armDir);
-    this.group.add(cuffMesh);
+    if (withArm) this.group.add(arm.mesh, cuffMesh);
 
     for (const n of [...FINGER_NAMES, "thumb"]) {
       const nail = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), nailMat);
@@ -293,8 +293,8 @@ class GltfHand implements HandRig {
     }
   }
 
-  static load(skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material): Promise<GltfHand> {
-    return new GLTFLoader().loadAsync("/hand/right.glb").then((g) => new GltfHand(g, skin, nailMat, cuff));
+  static load(skin: THREE.Material, nailMat: THREE.Material, cuff: THREE.Material, withArm = true): Promise<GltfHand> {
+    return new GLTFLoader().loadAsync("/hand/right.glb").then((g) => new GltfHand(g, skin, nailMat, cuff, withArm));
   }
 
   // モデル座標 <-> 手のローカル座標(手のひらの中心が原点、指は-Y方向、手のひらは+Z向き)
@@ -364,6 +364,57 @@ class GltfHand implements HandRig {
   }
 }
 
+
+// ---------- タイトルとゲームで共有する部品 ----------
+export interface StageMaterials { ivory: THREE.Material; navy: THREE.Material; skin: THREE.Material; nail: THREE.Material; cuff: THREE.Material }
+
+export function makeMaterials(): StageMaterials {
+  return {
+    ivory: new THREE.MeshStandardMaterial({ color: IVORY, roughness: 0.34, metalness: 0.06 }),
+    navy: new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.28, metalness: 0.4, emissive: 0x0b0f2a, emissiveIntensity: 0.6 }),
+    skin: new THREE.MeshPhysicalMaterial({ color: 0xd49a7c, roughness: 0.62, metalness: 0, sheen: 0.6, sheenColor: new THREE.Color(0xff9d7e), sheenRoughness: 0.55, emissive: 0x1e0a04, emissiveIntensity: 0.3 }),
+    nail: new THREE.MeshStandardMaterial({ color: 0xf0c9bb, roughness: 0.22, metalness: 0.05 }),
+    cuff: new THREE.MeshStandardMaterial({ color: 0x1b2a44, roughness: 0.4, metalness: 0.3, emissive: 0x66ccff, emissiveIntensity: 0.55 }),
+  };
+}
+
+/** 盤(枠 + 64マス)。floor=true なら舞台の床の円盤も置く。マスは file 0..7 → x=-3.5..3.5、rank 1..8 → z=3.5..-3.5 */
+export function buildBoardMeshes(scene: THREE.Scene, floor: boolean) {
+  if (floor) {
+    const f = new THREE.Mesh(new THREE.CircleGeometry(30, 64), new THREE.MeshStandardMaterial({ color: 0x0d1220, roughness: 0.55, metalness: 0.5 }));
+    f.rotation.x = -Math.PI / 2; f.position.y = -0.26; f.receiveShadow = true;
+    scene.add(f);
+  }
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.25, 9.2), new THREE.MeshStandardMaterial({ color: 0x141a2c, roughness: 0.4, metalness: 0.5 }));
+  frame.position.y = -0.14; frame.receiveShadow = true;
+  scene.add(frame);
+  const light = new THREE.MeshStandardMaterial({ color: 0xc9d2e6, roughness: 0.42, metalness: 0.08 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x27345a, roughness: 0.38, metalness: 0.2 });
+  const geo = new THREE.BoxGeometry(1, 0.08, 1);
+  for (let f = 0; f < 8; f++) for (let r = 1; r <= 8; r++) {
+    const m = new THREE.Mesh(geo, (f + r) % 2 ? light : dark);
+    m.position.set(f - 3.5, -0.04, 4.5 - r); m.receiveShadow = true;
+    scene.add(m);
+  }
+}
+
+export function addStageLights(scene: THREE.Scene) {
+  scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x0a0d14, 0.85));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+  sun.position.set(-4.5, 9, 6);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 1, far: 26 });
+  sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
+  scene.add(sun);
+  const rim = new THREE.PointLight(0x7d8cff, 55, 20, 1.5);
+  rim.position.set(5.5, 3.5, -6);
+  scene.add(rim);
+  const fill = new THREE.PointLight(0x4fd0c0, 22, 16, 1.6);
+  fill.position.set(-6, 2, 5);
+  scene.add(fill);
+}
+
 // ---------- 動きの台本 ----------
 interface Actor { obj: THREE.Group; type: PieceType; pos: THREE.Vector3 }
 interface Step { actor: Actor; to: THREE.Vector3 }
@@ -373,7 +424,7 @@ const PHASES: [string, number][] = [
   ["carry", 1.25], ["lower", 0.5], ["release", 0.4], ["retreat", 0.9],
 ];
 const CYCLE = PHASES.reduce((s, [, d]) => s + d, 0);
-const OPEN_GAP = 1.2;
+export const OPEN_GAP = 1.2;
 
 const ease = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
 const sq = (file: number, rank: number) => new THREE.Vector3(file - 3.5, 0, 4.5 - rank);   // file 0..7 (a-h), rank 1..8
@@ -415,16 +466,12 @@ export class StartScene {
     this.renderer.toneMappingExposure = 1.05;
 
     this.scene.fog = new THREE.Fog(0x0a0d14, 12, 26);
-    this.buildLights();
+    addStageLights(this.scene);
 
-    const ivory = new THREE.MeshStandardMaterial({ color: IVORY, roughness: 0.34, metalness: 0.06 });
-    const navy = new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.28, metalness: 0.4, emissive: 0x0b0f2a, emissiveIntensity: 0.6 });
-    this.buildBoard();
+    const { ivory, navy, skin, nail: nailMat, cuff } = makeMaterials();
+    buildBoardMeshes(this.scene, true);
     const actors = this.buildPieces(ivory, navy);
 
-    const skin = new THREE.MeshPhysicalMaterial({ color: 0xd49a7c, roughness: 0.62, metalness: 0, sheen: 0.6, sheenColor: new THREE.Color(0xff9d7e), sheenRoughness: 0.55, emissive: 0x1e0a04, emissiveIntensity: 0.3 });
-    const nailMat = new THREE.MeshStandardMaterial({ color: 0xf0c9bb, roughness: 0.22, metalness: 0.05 });
-    const cuff = new THREE.MeshStandardMaterial({ color: 0x1b2a44, roughness: 0.4, metalness: 0.3, emissive: 0x66ccff, emissiveIntensity: 0.55 });
     this.skinMat = skin; this.nailMat = nailMat; this.cuffMat = cuff;
     this.hand = new Hand(skin, nailMat, cuff);           // 骨入りモデルを読み込むまでの仮の手
     this.hand.group.rotation.y = HAND_YAW;
@@ -456,43 +503,6 @@ export class StartScene {
   }
 
   // ---------- 構築 ----------
-  private buildLights() {
-    this.scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x0a0d14, 0.85));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.4);
-    sun.position.set(-4.5, 9, 6);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 1, far: 26 });
-    sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
-    this.scene.add(sun);
-    const rim = new THREE.PointLight(0x7d8cff, 55, 20, 1.5);
-    rim.position.set(5.5, 3.5, -6);
-    this.scene.add(rim);
-    const fill = new THREE.PointLight(0x4fd0c0, 22, 16, 1.6);
-    fill.position.set(-6, 2, 5);
-    this.scene.add(fill);
-  }
-
-  private buildBoard() {
-    // 舞台の床(暗い円盤) + 盤(厚みのある箱)
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(30, 64), new THREE.MeshStandardMaterial({ color: 0x0d1220, roughness: 0.55, metalness: 0.5 }));
-    floor.rotation.x = -Math.PI / 2; floor.position.y = -0.26; floor.receiveShadow = true;
-    this.scene.add(floor);
-
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.25, 9.2), new THREE.MeshStandardMaterial({ color: 0x141a2c, roughness: 0.4, metalness: 0.5 }));
-    frame.position.y = -0.14; frame.receiveShadow = true;
-    this.scene.add(frame);
-
-    const light = new THREE.MeshStandardMaterial({ color: 0xc9d2e6, roughness: 0.42, metalness: 0.08 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x27345a, roughness: 0.38, metalness: 0.2 });
-    const geo = new THREE.BoxGeometry(1, 0.08, 1);
-    for (let f = 0; f < 8; f++) for (let r = 1; r <= 8; r++) {
-      const m = new THREE.Mesh(geo, (f + r) % 2 ? light : dark);
-      const p = sq(f, r); m.position.set(p.x, -0.04, p.z); m.receiveShadow = true;
-      this.scene.add(m);
-    }
-  }
-
   private buildPieces(ivory: THREE.Material, navy: THREE.Material): { wN: Actor; bN: Actor } {
     const place = (type: PieceType, mat: THREE.Material, pos: THREE.Vector3, scale = 1, ry = 0): Actor => {
       const obj = buildPiece(type, mat);

@@ -1,0 +1,298 @@
+import * as THREE from "three";
+import type { Game } from "./game";
+import { sqName } from "./pieces";
+import { S, SQ, View } from "./projection";
+import {
+  CLOSED_GAP, GRIP_Y, GltfHand, HAND_YAW, OPEN_GAP,
+  addStageLights, buildBoardMeshes, buildPiece, makeMaterials,
+  type HandRig, type PieceType, type StageMaterials,
+} from "./scene3d";
+
+/** 盤面座標(0..S)の(x, y) ⇔ ワールド座標(X, Z)。盤の中心が原点、1マス=1 */
+const toWorldX = (bx: number) => (bx - S / 2) / SQ;
+const toWorldZ = (by: number) => (by - S / 2) / SQ;
+
+/**
+ * 3Dの視点。今までの2Dの View と同じ project / unproject を、カメラの行列で実装する。
+ * 入力(手・マウス)の位置は、カメラから盤の面(y=0)へ伸ばしたレイの交点として盤面座標に変換される。
+ */
+export class View3D extends View {
+  private ray = new THREE.Raycaster();
+  private v = new THREE.Vector3();
+  private look = new THREE.Vector3();
+
+  constructor(readonly camera: THREE.PerspectiveCamera) {
+    super();
+    this.theta = this.target;           // 起動時から3D視点(切り替え時だけ滑らかに動かす)
+  }
+
+  step() {
+    super.step();
+    const t = Math.min(1, this.theta / 0.52);                 // 0: 真上から / 1: 斜めから
+    const elev = THREE.MathUtils.lerp(Math.PI / 2 - 0.02, 0.98, t);
+    const dist = THREE.MathUtils.lerp(19.5, 20.5, t);
+    this.look.set(0, 0, THREE.MathUtils.lerp(0, 0.5, t));
+    this.camera.position.set(this.look.x, this.look.y + Math.sin(elev) * dist, this.look.z + Math.cos(elev) * dist);
+    this.camera.lookAt(this.look);
+    this.camera.updateMatrixWorld();
+  }
+
+  project(x: number, y: number, h = 0) {
+    this.v.set(toWorldX(x), h / SQ, toWorldZ(y)).project(this.camera);
+    return { x: (this.v.x * 0.5 + 0.5) * S, y: (-this.v.y * 0.5 + 0.5) * S, s: 1 };
+  }
+
+  unproject(sx: number, sy: number) {
+    this.ray.setFromCamera(new THREE.Vector2((sx / S) * 2 - 1, -(sy / S) * 2 + 1), this.camera);
+    const { origin, direction } = this.ray.ray;
+    const t = direction.y === 0 ? 0 : -origin.y / direction.y;      // y=0 の面との交点
+    return { x: (origin.x + direction.x * t) * SQ + S / 2, y: (origin.z + direction.z * t) * SQ + S / 2 };
+  }
+}
+
+const HAND_SCALE = 0.95;             // ゲーム画面の手の大きさ(タイトルより少し小さくして、盤を隠しすぎない)
+const HAND_TILT = 0.15;             // 手を自分の側(画面の手前)から差し出す向きに傾ける(前腕が画面の下へ抜ける)
+const HELD_LIFT = 1.15;             // 掴んだ駒を持ち上げる高さ(ワールド)
+const MAX_TARGETS = 32;
+const MAX_PARTICLES = 90;
+
+type Stat = { group: THREE.Group; type: string; color: string };
+
+/** ゲーム画面の3D描画。盤の上の駒・ハイライト・パーティクル・つまむ手を、Game の状態から毎フレーム同期する。 */
+export class GameRenderer {
+  readonly view: View3D;
+  private renderer: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private camera = new THREE.PerspectiveCamera(30, 1, 0.1, 80);
+  private mats: StageMaterials;
+  private pool = new Map<string, THREE.Group[]>();
+  private statics = new Map<string, Stat>();             // マス → 静止している駒
+  private moving: Stat | null = null;                    // 移動アニメーション中の駒
+  private heldObj: Stat | null = null;                   // 掴まれている駒
+  private glow = new THREE.PointLight(0x66ccff, 0, 6, 1.6);
+  private lastMarks: THREE.Mesh[] = [];
+  private targetMarks: THREE.Mesh[] = [];
+  private hoverRing: THREE.Mesh;
+  private checkMark: THREE.Mesh;
+  private points: THREE.Points;
+  private hand: HandRig | null = null;
+  private handGap = OPEN_GAP;
+  private handPos = new THREE.Vector3(0, 3, 2);
+  private ro: ResizeObserver;
+
+  constructor(private canvas: HTMLCanvasElement) {
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+
+    this.view = new View3D(this.camera);
+    this.mats = makeMaterials();
+    addStageLights(this.scene);
+    buildBoardMeshes(this.scene, false);
+    this.scene.add(this.glow);
+
+    // ハイライト用の板(盤の上に薄く重ねる)
+    const flat = (color: number, geo: THREE.BufferGeometry, opacity: number) => {
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide }));
+      m.rotation.x = -Math.PI / 2; m.position.y = 0.012; m.visible = false; m.renderOrder = 2;
+      this.scene.add(m);
+      return m;
+    };
+    const sqGeo = new THREE.PlaneGeometry(0.98, 0.98);
+    this.lastMarks = [flat(0xffdc50, sqGeo, 0.38), flat(0xffdc50, sqGeo, 0.38)];
+    this.checkMark = flat(0xff3c3c, sqGeo, 0.5);
+    const disc = new THREE.CircleGeometry(0.17, 28);
+    for (let i = 0; i < MAX_TARGETS; i++) this.targetMarks.push(flat(0x50dc78, disc, 0.7));
+    this.hoverRing = flat(0x66ccff, new THREE.RingGeometry(0.4, 0.47, 40), 0.95);
+
+    // パーティクル
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3));
+    this.points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.13, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.points.frustumCulled = false;
+    this.scene.add(this.points);
+
+    // 骨入りの手(自分の手に重ねて動かす)。読み込めなくても遊べる
+    GltfHand.load(this.mats.skin, this.mats.nail, this.mats.cuff, false).then((h) => {
+      h.group.visible = false; h.group.scale.setScalar(HAND_SCALE); h.group.rotation.order = "YXZ";
+      this.scene.add(h.group); this.hand = h;
+    }).catch((e) => console.warn("手のモデルを読み込めません(3Dの手は表示されません)", e));
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(canvas);
+    this.resize();
+    this.view.step();
+  }
+
+  private resize() {
+    const w = this.canvas.clientWidth || S, h = this.canvas.clientHeight || S;
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  dispose() { this.ro.disconnect(); this.renderer.dispose(); }
+
+  // ---------- 駒のプール(生成コストを避けて使い回す) ----------
+  private acquire(type: string, color: string, bottom: string): Stat {
+    const key = color + type;
+    const g = this.pool.get(key)?.pop() ?? buildPiece(type as PieceType, color === "w" ? this.mats.ivory : this.mats.navy);
+    g.visible = true; this.scene.add(g);
+    if (type === "n") g.rotation.y = this.knightYaw(color, bottom);
+    return { group: g, type, color };
+  }
+
+  private release(s: Stat) {
+    this.scene.remove(s.group);
+    const key = s.color + s.type;
+    const list = this.pool.get(key) ?? [];
+    list.push(s.group); this.pool.set(key, list);
+  }
+
+  /** ナイトは相手側を向く(手前側の陣営は奥向き)。指でつまむ側面が、カメラから見て薄くなる向き */
+  private knightYaw(color: string, bottom: string, grabbed = false) {
+    const base = color === bottom ? Math.PI / 2 : -Math.PI / 2;
+    return grabbed ? base + HAND_YAW : base;
+  }
+
+  // ---------- 毎フレーム ----------
+  render(g: Game) {
+    const now = performance.now();
+    this.view.step();
+    if (g.shake > 0.3) {                                // 駒を取った時の画面の揺れ
+      this.camera.position.x += (Math.random() - 0.5) * g.shake * 0.02;
+      this.camera.position.y += (Math.random() - 0.5) * g.shake * 0.02;
+      g.shake *= 0.86;
+    } else g.shake = 0;
+
+    const bottom = g.flip ? "b" : "w";
+    const board = g.chess.board();
+
+    // 静止している駒を、現在の局面に合わせる(掴み中・移動中の駒は別扱い)
+    const want = new Map<string, { type: string; color: string }>();
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = board[r][c]; if (!p) continue;
+      const sq = sqName(c, r);
+      if (g.held?.from === sq || g.anim?.to === sq) continue;
+      want.set(sq, { type: p.type, color: p.color });
+    }
+    for (const [sq, st] of [...this.statics]) {
+      const w = want.get(sq);
+      if (!w || w.type !== st.type || w.color !== st.color) { this.release(st); this.statics.delete(sq); }
+    }
+    for (const [sq, w] of want) {
+      let st = this.statics.get(sq);
+      if (!st) { st = this.acquire(w.type, w.color, bottom); this.statics.set(sq, st); }
+      const c = g.sqCenter(sq);
+      st.group.position.set(toWorldX(c.x), 0, toWorldZ(c.y));
+      if (st.type === "n") st.group.rotation.y = this.knightYaw(st.color, bottom);
+    }
+
+    // 移動中の駒(相手の手は弧を描く / 自分の手は指の位置から着地)
+    const a = g.anim;
+    if (a) {
+      if (!this.moving || this.moving.type !== a.type || this.moving.color !== a.color) {
+        if (this.moving) this.release(this.moving);
+        this.moving = this.acquire(a.type, a.color, bottom);
+      }
+      const p = Math.min(1, (now - a.t0) / a.dur), e = 1 - Math.pow(1 - p, 3);
+      const x = a.x0 + (a.x1 - a.x0) * e, y = a.y0 + (a.y1 - a.y0) * e;
+      const h = a.own ? (1 - e) * HELD_LIFT : Math.sin(Math.PI * p) * 1.0;
+      this.moving.group.position.set(toWorldX(x), h, toWorldZ(y));
+      if (p >= 1) g.landFx(a);
+    } else if (this.moving) { this.release(this.moving); this.moving = null; }
+
+    // 掴んでいる駒(手に付いて持ち上がり、青く光る)
+    const cur = g.cursor;
+    if (g.held && cur) {
+      if (!this.heldObj || this.heldObj.type !== g.held.type || this.heldObj.color !== g.held.color) {
+        if (this.heldObj) this.release(this.heldObj);
+        this.heldObj = this.acquire(g.held.type, g.held.color, bottom);
+      }
+      this.heldObj.group.position.set(toWorldX(cur.x), HELD_LIFT, toWorldZ(cur.y));
+      if (this.heldObj.type === "n") this.heldObj.group.rotation.y = this.knightYaw(this.heldObj.color, bottom, true);   // 指の間に収まる向き
+      this.glow.position.set(toWorldX(cur.x), HELD_LIFT + 0.9, toWorldZ(cur.y));
+      this.glow.intensity = 7;
+    } else {
+      if (this.heldObj) { this.release(this.heldObj); this.heldObj = null; }
+      this.glow.intensity = 0;
+    }
+
+    this.updateMarks(g, cur, now);
+    this.updateParticles(g);
+    this.updateHand(g, cur);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private place(m: THREE.Mesh, sq: string, g: Game) {
+    const c = g.sqCenter(sq);
+    m.position.x = toWorldX(c.x); m.position.z = toWorldZ(c.y); m.visible = true;
+  }
+
+  /** 最後の手・行ける場所・王手・カーソルの下のマスを、盤の上に重ねる */
+  private updateMarks(g: Game, cur: { x: number; y: number } | null, now: number) {
+    this.lastMarks.forEach((m, i) => {
+      const sq = g.lastMove ? (i === 0 ? g.lastMove.from : g.lastMove.to) : null;
+      if (sq) this.place(m, sq, g); else m.visible = false;
+    });
+    const targets = g.held ? [...g.held.targets] : [];
+    this.targetMarks.forEach((m, i) => { if (targets[i]) this.place(m, targets[i], g); else m.visible = false; });
+
+    const king = g.kingInCheckSquare;
+    if (king) { this.place(this.checkMark, king, g); (this.checkMark.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.2 * Math.sin(now / 120); }
+    else this.checkMark.visible = false;
+
+    const t = cur ? g.snapTarget(cur) : null;
+    if (t && !g.thinking && !g.result) {
+      this.place(this.hoverRing, t, g);
+      (this.hoverRing.material as THREE.MeshBasicMaterial).color.set(g.input.pinch ? 0xff6666 : 0x66ccff);
+    } else this.hoverRing.visible = false;
+  }
+
+  private updateParticles(g: Game) {
+    const pos = this.points.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const col = this.points.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const tmp = new THREE.Color();
+    for (let i = g.particles.length - 1; i >= 0; i--) {
+      const p = g.particles[i];
+      p.x += p.vx; p.y += p.vy; p.z += p.vz; p.vz -= 0.5; p.life -= 0.022;
+      if (p.z < 0) { p.z = 0; p.vz *= -0.4; }
+      if (p.life <= 0) g.particles.splice(i, 1);
+    }
+    const n = Math.min(g.particles.length, MAX_PARTICLES);
+    for (let i = 0; i < n; i++) {
+      const p = g.particles[i];
+      pos.setXYZ(i, toWorldX(p.x), p.z / SQ, toWorldZ(p.y));
+      tmp.set(p.color).multiplyScalar(Math.max(0, p.life));       // 加算合成なので、暗くして消えていく
+      col.setXYZ(i, tmp.r, tmp.g, tmp.b);
+    }
+    for (let i = n; i < MAX_PARTICLES; i++) { pos.setXYZ(i, 0, -50, 0); col.setXYZ(i, 0, 0, 0); }
+    pos.needsUpdate = true; col.needsUpdate = true;
+  }
+
+  /** 自分の手(カメラが捉えた手)に、3Dの手を重ねる。つまむと指が閉じ、掴んだ駒は指の間に収まる */
+  private updateHand(g: Game, cur: { x: number; y: number } | null) {
+    const h = this.hand;
+    if (!h) return;
+    const show = g.input.source === "hand" && !!cur && !g.result;
+    h.group.visible = show;
+    if (!show || !cur) return;
+
+    const held = g.held;
+    const gripY = held ? HELD_LIFT + GRIP_Y[held.type as PieceType] : 1.15;       // 掴んでいる時は駒の首の高さ、普通は盤の少し上
+    const want = new THREE.Vector3(toWorldX(cur.x), gripY, toWorldZ(cur.y));
+    this.handPos.lerp(want, 0.45);
+    const targetGap = g.input.pinch ? CLOSED_GAP[(held?.type ?? "p") as PieceType] : OPEN_GAP;
+    this.handGap += (targetGap - this.handGap) * 0.35;
+
+    h.group.rotation.set(HAND_TILT, HAND_YAW, 0);
+    const off = h.grip.clone().multiplyScalar(HAND_SCALE).applyQuaternion(h.group.quaternion);
+    h.group.position.copy(this.handPos).sub(off);
+    h.pose(this.handGap / HAND_SCALE);                  // 指の間隔は、手のローカル単位(拡大前)に直して渡す
+  }
+}

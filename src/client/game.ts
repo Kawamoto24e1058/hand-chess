@@ -12,9 +12,9 @@ export type GameMode =
   | { kind: "local" }
   | { kind: "online"; room: string; tc: string };
 
-export interface Held { from: string; glyph: string; color: Color; targets: Set<string> }
+export interface Held { from: string; glyph: string; type: string; color: Color; targets: Set<string> }
 export interface Anim {
-  to: string; glyph: string; color: Color; own: boolean; t0: number; dur: number;
+  to: string; glyph: string; type: string; color: Color; own: boolean; t0: number; dur: number;
   x0: number; y0: number; x1: number; y1: number;
   fx: { captured: boolean; capturedColor: Color; san: string };
 }
@@ -59,7 +59,7 @@ export class Game {
   private engine = new Engine();
   private token = 0;                   // AI思考中に画面を離れた時、古い応答を捨てるため
 
-  constructor(readonly input: HandInput, readonly view: View) {
+  constructor(readonly input: HandInput, public view: View) {
     input.onPinchStart = (past, now) => this.onPinchStart(past, now);
     input.onPinchEnd = (past, reason) => this.onPinchEnd(past, reason);
     this.engine.init();
@@ -147,7 +147,7 @@ export class Game {
     if (!p || !this.canMoveNow(p.color)) return false;
     const targets = new Set(this.chess.moves({ square: sq as never, verbose: true }).map((m) => m.to));
     if (!targets.size) return false;
-    this.held = { from: sq, glyph: glyphOf(p.type), color: p.color, targets };
+    this.held = { from: sq, glyph: glyphOf(p.type), type: p.type, color: p.color, targets };
     this.input.holding = true;
     sfx.grab();
     return true;
@@ -185,7 +185,7 @@ export class Game {
     this.moveList.push(m.san);
     const a = this.sqCenter(m.from), b = this.sqCenter(m.to), piece = this.chess.get(m.to as never)!;
     this.anim = {
-      to: m.to, glyph: glyphOf(piece.type), color: piece.color, own: !!dropFrom,
+      to: m.to, glyph: glyphOf(piece.type), type: piece.type, color: piece.color, own: !!dropFrom,
       t0: performance.now(), dur: dropFrom ? 160 : 380,
       x0: dropFrom?.x ?? a.x, y0: dropFrom?.y ?? a.y, x1: b.x, y1: b.y,
       fx: { captured: !!m.captured, capturedColor: other(m.color), san: m.san },

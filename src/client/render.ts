@@ -42,14 +42,6 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, opts: RenderOpts) {
     if (g.held?.targets.has(sq)) { ctx.fillStyle = "rgba(80,220,120,.4)"; ctx.fill(); }
     if (sq === target && !g.thinking) { ctx.strokeStyle = input.pinch ? "#f66" : "#6cf"; ctx.lineWidth = 3; ctx.stroke(); }
   }
-  // 盤の座標ラベル(手前の辺と左の辺)
-  ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.textAlign = "center"; ctx.textBaseline = "top";
-  for (let i = 0; i < 8; i++) {
-    const file = g.flip ? 7 - i : i, rank = g.flip ? i : 7 - i;
-    const a = view.project((i + 0.5) * SQ, S + 6); ctx.fillText("abcdefgh"[file], a.x, a.y);
-    const b = view.project(-14, (i + 0.5) * SQ); ctx.textBaseline = "middle"; ctx.fillText(String(rank + 1), b.x, b.y); ctx.textBaseline = "top";
-  }
-
   // ---- 影・台座・駒(奥の段から描く) ----
   const base = (x: number, y: number, r: number, color?: Color) => {
     const q = view.project(x, y), rx = r * K * q.s * (color ? 1.25 : 1), ry = rx * (0.4 + 0.6 * Math.cos(view.theta));
@@ -98,6 +90,29 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, opts: RenderOpts) {
     ctx.beginPath(); ctx.arc(q.x, q.y, 3.5 * q.s, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
   }
 
+  drawOverlay(ctx, g, opts, false);
+  ctx.restore();
+
+  if (opts.debug) drawDebug(ctx, g);
+}
+
+
+/**
+ * 盤の上に重ねる表示(座標ラベル・手の骨格・カーソル・解説・終局バナー・キャリブレーションのガイド)。
+ * 3D描画では、この関数だけを透明な2Dキャンバスに描く。standalone=true なら先に消去する。
+ */
+export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: RenderOpts, standalone = true) {
+  const { view, input } = g;
+  const cur = g.cursor;
+  if (standalone) ctx.clearRect(0, 0, S, S);
+  // 盤の座標ラベル(手前の辺と左の辺)
+  ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let i = 0; i < 8; i++) {
+    const file = g.flip ? 7 - i : i, rank = g.flip ? i : 7 - i;
+    const a = view.project((i + 0.5) * SQ, S + 6); ctx.fillText("abcdefgh"[file], a.x, a.y);
+    const b = view.project(-14, (i + 0.5) * SQ); ctx.textBaseline = "middle"; ctx.fillText(String(rank + 1), b.x, b.y); ctx.textBaseline = "top";
+  }
+
   // 手の骨格(カメラ映像と同じ向き)
   if (input.landmarks) {
     ctx.fillStyle = "rgba(120,220,255,.9)";
@@ -124,13 +139,14 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, opts: RenderOpts) {
     ctx.font = "bold 32px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillStyle = "#6cf"; ctx.fillText(input.calib.text, S / 2, S / 2);
   }
-  ctx.restore();
+  if (standalone && opts.debug) drawDebug(ctx, g);
+}
 
-  if (opts.debug) {
-    ctx.fillStyle = "#0f0"; ctx.font = "14px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.fillText(`detect ${input.fps}fps  pinch ${input.pinchRatio.toFixed(2)} (img ${input.imgRatio.toFixed(2)})  src ${input.source}  cam ${input.cameraState}`, 8, 8);
-    ctx.fillText(`thr grab<${input.thr.grab.toFixed(2)} rel>${input.thr.release.toFixed(2)}/${input.thr.releaseHeld.toFixed(2)}`, 8, 26);
-  }
+function drawDebug(ctx: CanvasRenderingContext2D, g: Game) {
+  const { input } = g;
+  ctx.fillStyle = "#0f0"; ctx.font = "14px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText(`detect ${input.fps}fps  pinch ${input.pinchRatio.toFixed(2)} (img ${input.imgRatio.toFixed(2)})  src ${input.source}  cam ${input.cameraState}`, 8, 8);
+  ctx.fillText(`thr grab<${input.thr.grab.toFixed(2)} rel>${input.thr.release.toFixed(2)}/${input.thr.releaseHeld.toFixed(2)}`, 8, 26);
 }
 
 /** LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄) */

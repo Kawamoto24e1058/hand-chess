@@ -141,9 +141,14 @@ a:hover { text-decoration: underline; }
 /* ============ 対局 ============ */
 .screen.game { max-width: 1180px; display: flex; gap: 18px; align-items: flex-start; justify-content: center; flex-wrap: wrap; padding-top: 16px; }
 .stage { position: relative; width: min(94vw, 720px); }
-canvas#board { width: 100%; height: auto; aspect-ratio: 1; border-radius: 12px; background: #000; touch-action: none; display: block; }
-.cam-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; background: rgba(8,10,16,.72); border-radius: 12px; padding: 24px; font-size: 17px; white-space: pre-line; }
-.calib-banner { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; background: rgba(13,16,23,.92); border: 1px solid var(--accent); border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+canvas#board { position: relative; z-index: 2; width: 100%; height: auto; aspect-ratio: 1; border-radius: 12px; background: #000; touch-action: none; display: block; }
+/* 3D描画時: 奥から 背景の暗い面 → カメラ映像(自分の手の位置に合わせて拡大・鏡像) → 3D盤 → 2Dの重ね描き */
+.stage { border-radius: 12px; overflow: hidden; background: radial-gradient(ellipse at 50% 35%, #16223c, #0a0d14 75%); }
+.stage.gl canvas#board { background: transparent; }
+canvas#board3d { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; pointer-events: none; border-radius: 12px; }
+.cam-bg { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1) scale(1.25); opacity: .42; pointer-events: none; }
+.cam-overlay { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; background: rgba(8,10,16,.72); border-radius: 12px; padding: 24px; font-size: 17px; white-space: pre-line; }
+.calib-banner { position: absolute; z-index: 3; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; background: rgba(13,16,23,.92); border: 1px solid var(--accent); border-radius: 10px; padding: 8px 12px; font-size: 14px; }
 .calib-banner span { flex: 1; }
 .hud { width: min(94vw, 300px); display: flex; flex-direction: column; gap: 10px; }
 .player { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
