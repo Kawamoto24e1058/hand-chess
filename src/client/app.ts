@@ -53,6 +53,7 @@ export class App {
     audioState.enabled = store.get("sound", true);
     this.view.target = store.get("view3d", true) ? 0.52 : 0;
 
+    this.game.depthMode = store.get("depth", true);
     this.wireStart(); this.wireGame(); this.wireModal(); this.wireKeys();
     this.handleInviteLink();
     this.show(this.hasInvite() ? "start" : "title");
@@ -244,6 +245,7 @@ export class App {
       if (this.input.cameraState === "off") { this.camErrorDismissed = false; void this.input.startCamera(); } else this.input.stopCamera();
     };
     $("toolCalib").onclick = () => this.calibrate();
+    $("toolDepth").onclick = () => { this.game.depthMode = !this.game.depthMode; store.set("depth", this.game.depthMode); };
     $("toolRelock").onclick = () => { this.input.releaseLock(); this.toast("いちばん近くの手を追従し直します", 2200); };
     $("toolHints").onclick = () => { this.hints = !this.hints; store.set("hints", this.hints); };
     // 駒ガイド(6種類の名前と動き方)
@@ -340,6 +342,7 @@ export class App {
     // ツールの表示
     setText($("toolSound"), `効果音: ${audioState.enabled ? "ON" : "OFF"}`);
     setText($("toolCam"), `カメラ: ${inp.cameraState === "off" ? "OFF" : "ON"}`);
+    setText($("toolDepth"), `奥行き操作: ${g.depthMode ? "ON" : "OFF"}`);
     setText($("toolHints"), `ヒント: ${this.hints ? "ON" : "OFF"}`);
     const focus = g.held?.type ?? g.hoverInfo()?.type;          // 指している/掴んでいる駒をガイドで光らせる
     document.querySelectorAll<HTMLElement>("#guideList li").forEach((li) => li.classList.toggle("on", li.dataset.type === focus));

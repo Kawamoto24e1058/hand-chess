@@ -152,7 +152,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
 function drawDebug(ctx: CanvasRenderingContext2D, g: Game) {
   const { input } = g;
   ctx.fillStyle = "#0f0"; ctx.font = "14px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
-  ctx.fillText(`detect ${input.fps}fps  pinch ${input.pinchRatio.toFixed(2)} (img ${input.imgRatio.toFixed(2)})  src ${input.source}  cam ${input.cameraState}`, 8, 8);
+  ctx.fillText(`detect ${input.fps}fps  pinch ${input.pinchRatio.toFixed(2)} (img ${input.imgRatio.toFixed(2)})  src ${input.source}  cam ${input.cameraState}  depth ${input.depth.toFixed(0)}`, 8, 8);
   ctx.fillText(`thr grab<${input.thr.grab.toFixed(2)} rel>${input.thr.release.toFixed(2)}/${input.thr.releaseHeld.toFixed(2)}`, 8, 26);
 }
 

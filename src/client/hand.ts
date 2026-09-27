@@ -4,6 +4,8 @@ import { S, type Pt } from "./projection";
 import { store } from "./store";
 
 export type PinchEndReason = "release" | "lost";
+/** 画面上の位置(x, y)と、奥行きの指標 r(手が大きく映る=カメラに近いほど大きい。マウスや未検出は 0) */
+export type Pos = Pt & { r: number };
 export type CameraState = "off" | "loading" | "ready" | "error";
 
 interface Thresholds { grab: number; release: number; releaseHeld: number }
@@ -15,6 +17,7 @@ const RELEASE_FRAMES = 3;     // 「離す」確定に必要な連続フレー�
 const GRAB_FRAMES = 2;        // 「掴む」確定に必要な連続フレーム数
 const CAL_SETTLE = 800, CAL_MS = 2500;
 const MIN_HAND_SIZE = 0.07;        // 手首〜中指の付け根の長さ(画像に対する割合)。これより小さい手(遠い人)は無視
+const PALM_SEGMENTS: [number, number][] = [[0, 5], [0, 9], [0, 13], [0, 17], [5, 9], [9, 13], [13, 17], [5, 17]];   // 手のひらの骨格
 const LOCK_RADIUS = 0.22;          // 追従中の手が、前のフレームからこれ以上離れたら別の手とみなす
 
 /** 正規化されたカメラ座標(ミラー済み)を、カメラ中央80%が盤面全体に対応する画面座標に */
@@ -41,8 +44,8 @@ export class HandInput {
   source: "none" | "hand" | "mouse" = "none";
   holding = false;                       // ゲーム側が駒を掴んでいる間はtrue(離す閾値を緩めるため)
 
-  onPinchStart?: (past: Pt, now: Pt) => void;
-  onPinchEnd?: (past: Pt, reason: PinchEndReason) => void;
+  onPinchStart?: (past: Pos, now: Pos) => void;
+  onPinchEnd?: (past: Pos, reason: PinchEndReason) => void;
   onNotice?: (msg: string, ms?: number) => void;
 
   cameraState: CameraState = "off";
@@ -56,12 +59,14 @@ export class HandInput {
   landmarks: NormalizedLandmark[] | null = null;
   otherHands: NormalizedLandmark[][] = [];              // 追従していない(無視している)手。画面に薄く出して、拾っていないことを示す
   pinchRatio = 0; imgRatio = 0; fps = 0;
+  depth = 0;                                            // 奥行きの指標(大きいほどカメラに近い)。手が見えていない時・マウスの時は0
   rawTrail: [number, number][] = []; filtTrail: [number, number][] = []; ratioHist: [number, boolean][] = [];
 
   private landmarker: HandLandmarker | null = null;
   private stream: MediaStream | null = null;
   private fx = new OneEuro(); private fy = new OneEuro();
-  private hist: { t: number; x: number; y: number }[] = [];
+  private hist: { t: number; x: number; y: number; r: number }[] = [];
+  private depthF = new OneEuro(0.8, 0.02);
   private lastVideoTime = -1;
   private grabFrames = 0; private relFrames = 0; private relStart = 0; private lostSince = 0;
   private seen = 0;
@@ -180,6 +185,8 @@ export class HandInput {
       : this.imgRatio;
     push(this.rawTrail, [sx, sy], 40); push(this.filtTrail, [fxv, fyv], 40); push(this.ratioHist, [this.pinchRatio, this.pinch], 160);
 
+    this.depth = this.estimateDepth(lm, wl, t);
+
     if (this.calib) { this.calibTick(t); return; }      // 測定中は掴み判定を止める
 
     if (!this.pinch) {
@@ -191,33 +198,49 @@ export class HandInput {
     } else { this.relFrames = 0; this.relStart = 0; }                     // 途中で戻ったら「離す」はキャンセル
   }
 
+  /**
+   * 奥行きの指標: 手のひらの線分について「画像上の長さ ÷ 実寸(メートル)」を求め、最大のものを使う。
+   * カメラに近いほど大きい(焦点距離÷距離に比例)。向きで縮んで見える線分は小さくなるので、最大値を取れば向きの影響を受けにくい。
+   */
+  private estimateDepth(lm: NormalizedLandmark[], wl: Landmark[] | undefined, t: number): number {
+    if (!wl) return 0;
+    const W = this.video.videoWidth || 640, H = this.video.videoHeight || 480;
+    let best = 0;
+    for (const [a, b] of PALM_SEGMENTS) {
+      const wd = dist3(wl[a], wl[b]);
+      if (wd < 1e-4) continue;
+      best = Math.max(best, Math.hypot((lm[a].x - lm[b].x) * W, (lm[a].y - lm[b].y) * H) / wd);
+    }
+    return best > 0 ? this.depthF.filter(best, t) : 0;
+  }
+
   private onHandLost(t: number) {
     if (this.source !== "hand") return;
     this.lostSince ||= t;
     if (t - this.lostSince < LOST_GRACE) return;         // 一瞬の検出落ちは無視(掴んだ駒はその場に保持)
-    this.fx.reset(); this.fy.reset(); this.grabFrames = 0; this.lostSince = 0; this.lockPos = null;
+    this.fx.reset(); this.fy.reset(); this.depthF.reset(); this.depth = 0; this.grabFrames = 0; this.lostSince = 0; this.lockPos = null;
     if (this.calib) { this.calib = null; this.onNotice?.("手を見失ったのでキャリブレーションを中断しました"); }
     this.cancelHold();
     this.source = "none";
   }
 
   private cancelHold() {
-    if (this.pinch) { this.pinch = false; this.onPinchEnd?.(this.screen, "lost"); }   // 意図しない場所に置かず元に戻す
+    if (this.pinch) { this.pinch = false; this.onPinchEnd?.({ ...this.screen, r: this.depth }, "lost"); }   // 意図しない場所に置かず元に戻す
   }
 
-  private record(t: number) { push(this.hist, { t, x: this.screen.x, y: this.screen.y }, 60); }
+  private record(t: number) { push(this.hist, { t, x: this.screen.x, y: this.screen.y, r: this.depth }, 60); }
 
-  posAt(t: number): Pt {
-    let r = this.hist[0] ?? { ...this.screen, t: 0 };
+  posAt(t: number): Pos {
+    let r = this.hist[0] ?? { ...this.screen, r: this.depth, t: 0 };
     for (const h of this.hist) { if (h.t <= t) r = h; else break; }
-    return { x: r.x, y: r.y };
+    return { x: r.x, y: r.y, r: r.r };
   }
 
   private setPinch(next: boolean, at?: number) {
     if (next === this.pinch) return;
     this.pinch = next; this.relFrames = 0; this.relStart = 0;
     const past = this.posAt(at ?? performance.now() - (this.source === "hand" ? LAG : 0));
-    if (next) this.onPinchStart?.(past, { ...this.screen });
+    if (next) this.onPinchStart?.(past, { ...this.screen, r: this.depth });
     else this.onPinchEnd?.(past, "release");
   }
 

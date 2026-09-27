@@ -2,7 +2,7 @@ import { Chess } from "chess.js";
 import type { ClockState, Color, GameResult, MoveInput, Names, Presence, ServerMsg, TimeControl } from "../shared/protocol";
 import { sfx } from "./audio";
 import { Engine } from "./engine";
-import type { HandInput, PinchEndReason } from "./hand";
+import type { HandInput, PinchEndReason, Pos } from "./hand";
 import { RoomConnection, type NetStatus } from "./net";
 import { glyphOf, FILES, sqName } from "./pieces";
 import { SQ, S, View, type Pt } from "./projection";
@@ -21,6 +21,8 @@ export interface Anim {
 export interface Particle { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number; color: string }
 
 const other = (c: Color): Color => (c === "w" ? "b" : "w");
+const PUSH_GAIN = 1400;        // 手の大きさが100%変わった時に進む盤面の距離(px)。25%近づけると約4マス奥へ
+const PUSH_Y_BLEND = 0.3;      // 手の上下の動きを、奥行きの動きにどれだけ足すか
 
 /**
  * 対局の状態と進行。入力(HandInput)・エンジン・サーバー接続をつなぎ、描画(render.ts)とUI(ui.ts)は
@@ -57,6 +59,9 @@ export class Game {
   private serverCount = 0;
   private playerName = "Player";
   private engine = new Engine();
+  /** 奥行き操作: 掴んだあと、手を前に突き出すと駒が盤の奥へ進む(手の大きさの変化から推定) */
+  depthMode = true;
+  private push: { origin: Pt; hb0: Pt; r0: number } | null = null;       // 掴んだ瞬間の、駒の元の位置・手の位置・手の大きさ
   private turnLockUntil = 0;             // 盤を回している間は、駒を掴めないようにする
   private token = 0;                   // AI思考中に画面を離れた時、古い応答を捨てるため
 
@@ -100,7 +105,23 @@ export class Game {
   private board(p: Pt): Pt { const b = this.view.unproject(p.x, p.y); return { x: Math.min(S, Math.max(0, b.x)), y: Math.min(S, Math.max(0, b.y)) }; }
 
   /** 現在のカーソル位置(盤面座標)。未入力なら null */
-  get cursor(): Pt | null { return this.input.screen.x < 0 ? null : this.board(this.input.screen); }
+  get cursor(): Pt | null { return this.input.screen.x < 0 ? null : this.cursorAt(this.input.screen, this.input.depth); }
+
+  /**
+   * 画面上の手の位置 s と手の大きさ r から、盤面上のカーソル位置を求める。
+   * 掴む前: 指した位置に合わせる。
+   * 掴んだあと(奥行き操作): 掴んだ瞬間の駒の位置を起点に、左右は手の左右の動き、前後(盤の奥行き)は手を突き出した量で動かす。
+   *   手を上下に動かす動きも、少しだけ効かせる(手を上げて奥へ動かす癖でも動くように)。
+   */
+  cursorAt(s: Pt, r: number): Pt {
+    const hb = this.board(s), pb = this.push;
+    if (!this.held || !pb || !this.depthMode || !(r > 0) || !(pb.r0 > 0)) return hb;
+    const dz = Math.max(-0.6, Math.min(0.6, (r - pb.r0) / pb.r0));            // 手が大きくなった割合(近づいた=前に突き出した)
+    return {
+      x: Math.min(S, Math.max(0, pb.origin.x + (hb.x - pb.hb0.x))),
+      y: Math.min(S, Math.max(0, pb.origin.y + PUSH_Y_BLEND * (hb.y - pb.hb0.y) - PUSH_GAIN * dz)),   // 前に突き出す = 盤の奥(上)
+    };
+  }
 
   sqAt(p: Pt): string | null {
     const dc = Math.floor(p.x / SQ), dr = Math.floor(p.y / SQ);
@@ -124,9 +145,12 @@ export class Game {
     return best ?? this.sqAt(p);
   }
 
-  private onPinchStart(past: Pt, now: Pt) {
+  private onPinchStart(past: Pos, now: Pos) {
     const sq = this.pickSquare(this.board(past)) ?? this.pickSquare(this.board(now));
-    if (sq) this.tryGrab(sq);
+    if (sq && this.tryGrab(sq)) {
+      // 奥行き操作の起点: 駒の元の位置(吸着後)と、そのときの手の位置・大きさ
+      this.push = this.input.source === "hand" && past.r > 0 ? { origin: this.sqCenter(sq), hb0: this.board(past), r0: past.r } : null;
+    }
   }
 
   // ---------- 「どの駒を掴もうとしているか」の判定(表示と掴む動作で同じ関数を使う) ----------
@@ -168,10 +192,10 @@ export class Game {
     return sq && p ? { sq, type: p.type, color: p.color, movable: pick === sq } : null;
   }
 
-  private onPinchEnd(past: Pt, reason: PinchEndReason) {
+  private onPinchEnd(past: Pos, reason: PinchEndReason) {
     if (!this.held) return;
-    if (reason === "lost") { this.held = null; this.input.holding = false; this.onToast?.("手を見失ったので駒を戻しました"); return; }
-    void this.drop(this.snapTarget(this.board(past)));
+    if (reason === "lost") { this.held = null; this.push = null; this.input.holding = false; this.onToast?.("手を見失ったので駒を戻しました"); return; }
+    void this.drop(this.snapTarget(this.cursorAt(past, past.r)));           // 離す動作で手がぶれる前の位置(遅延補正)
   }
 
   canMoveNow(color: Color): boolean {
