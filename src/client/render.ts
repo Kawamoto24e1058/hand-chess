@@ -132,6 +132,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
   if (opts.explain) drawExplain(ctx, g);
 
   drawCursorHelp(ctx, g);
+  drawBoardCal(ctx, g);
 
   // 終局バナー
   if (g.result && !g.anim) {
@@ -153,6 +154,7 @@ function drawDebug(ctx: CanvasRenderingContext2D, g: Game) {
   const { input } = g;
   ctx.fillStyle = "#0f0"; ctx.font = "14px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
   ctx.fillText(`detect ${input.fps}fps  pinch ${input.pinchRatio.toFixed(2)} (img ${input.imgRatio.toFixed(2)})  src ${input.source}  cam ${input.cameraState}  depth ${input.depth.toFixed(0)}`, 8, 8);
+  if (g.mapInfo) ctx.fillText(`map ${g.mapOn ? "ON" : "OFF"}  tilt ${g.mapInfo.tilt.toFixed(0)}deg  err ${g.mapInfo.err.toFixed(0)}px`, 8, 44);
   ctx.fillText(`thr grab<${input.thr.grab.toFixed(2)} rel>${input.thr.release.toFixed(2)}/${input.thr.releaseHeld.toFixed(2)}`, 8, 26);
 }
 
@@ -235,6 +237,34 @@ export function drawMoveDiagram(ctx: CanvasRenderingContext2D, g: Game, size: nu
   ctx.lineWidth = 4; ctx.strokeStyle = info.color === "w" ? "#1b1b1b" : "#e6ecff"; ctx.strokeText(glyphOf(info.type), cx(0), cy(0) + 1);
   ctx.fillStyle = info.color === "w" ? "#fff6dc" : "#1c2a66"; ctx.fillText(glyphOf(info.type), cx(0), cy(0) + 1);
   return true;
+}
+
+
+/** 実位置キャリブレーション中の案内: 盤の光っている位置を、順につまんで示してもらう */
+function drawBoardCal(ctx: CanvasRenderingContext2D, g: Game) {
+  const cal = g.cal;
+  if (!cal) return;
+  const { view } = g;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let i = 0; i < 5; i++) {
+    const t = g.calTarget(i), q = view.project(t.x, t.y);
+    if (i < cal.step) {                                              // 済み: 緑の丸
+      ctx.fillStyle = "rgba(25,224,138,.9)"; ctx.beginPath(); ctx.arc(q.x, q.y, 12, 0, 7); ctx.fill();
+      ctx.fillStyle = "#04261a"; ctx.font = "bold 14px sans-serif"; ctx.fillText(String(i + 1), q.x, q.y + 1);
+    } else if (i === cal.step) {                                     // 今: 光る輪
+      const k = 1 + 0.16 * Math.sin(performance.now() / 150);
+      ctx.fillStyle = "rgba(255,204,102,.28)"; ctx.beginPath(); ctx.arc(q.x, q.y, 30 * k, 0, 7); ctx.fill();
+      ctx.strokeStyle = "#fc6"; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(q.x, q.y, 30 * k, 0, 7); ctx.stroke();
+      ctx.fillStyle = "#fc6"; ctx.font = "bold 22px sans-serif"; ctx.fillText(String(i + 1), q.x, q.y + 1);
+    } else {                                                         // これから: 薄い輪
+      ctx.strokeStyle = "rgba(255,255,255,.4)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(q.x, q.y, 14, 0, 7); ctx.stroke();
+    }
+  }
+  ctx.fillStyle = "rgba(10,13,20,.88)"; ctx.fillRect(0, S - 66, S, 66);
+  ctx.fillStyle = "#fc6"; ctx.font = "bold 20px sans-serif";
+  ctx.fillText(`光っている位置に手を持っていき、つまんでください (${cal.step + 1}/5)`, S / 2, S - 40);
+  ctx.fillStyle = "#9aa5bd"; ctx.font = "13px sans-serif";
+  ctx.fillText("手前左 → 手前右 → 奥右 → 奥左 → 中央 の順です。やめるには Esc", S / 2, S - 16);
 }
 
 /** LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄) */

@@ -3,7 +3,9 @@ import type { ClockState, Color, GameResult, MoveInput, Names, Presence, ServerM
 import { sfx } from "./audio";
 import { Engine } from "./engine";
 import type { HandInput, PinchEndReason, Pos } from "./hand";
+import { applyBoardMap, fitBoardMap, fitError, tiltDegrees, type BoardMap, type CalSample, type P3 } from "./calibration";
 import { RoomConnection, type NetStatus } from "./net";
+import { store } from "./store";
 import { glyphOf, FILES, sqName } from "./pieces";
 import { SQ, S, View, type Pt } from "./projection";
 
@@ -64,6 +66,14 @@ export class Game {
   depthMode = true;
   depthSense = 1;                                                        // 奥行きの感度(倍率): 低 0.6 / 標準 1 / 高 1.6
   private push: { origin: Pt; hb0: Pt; r0: number } | null = null;       // 掴んだ瞬間の、駒の元の位置・手の位置・手の大きさ
+  /**
+   * 実位置マッピング(四隅キャリブレーション後): 手の3次元位置を、盤の位置に直接対応させる。
+   * 「手をその位置に持っていくと、そこに置ける」という、実際に盤に触れているような対応になる。
+   */
+  boardMap: BoardMap | null = store.get<BoardMap | null>("boardMap", null);
+  mapOn = store.get<boolean>("mapOn", true);
+  mapInfo: { tilt: number; err: number } | null = store.get("mapInfo", null);
+  cal: { step: number; samples: CalSample[] } | null = null;              // キャリブレーション中(盤の四隅と中央を、順につまんで示す)
   private turnLockUntil = 0;             // 盤を回している間は、駒を掴めないようにする
   private token = 0;                   // AI思考中に画面を離れた時、古い応答を捨てるため
 
@@ -103,11 +113,43 @@ export class Game {
     this.turnLockUntil = 0; if (this.mode.kind === "local") this.flip = false;
   }
 
+  // ---------- 実位置マッピングのキャリブレーション ----------
+  /** 示してもらう場所(盤面座標): 手前左 → 手前右 → 奥右 → 奥左 → 中央 */
+  calTarget(step: number): Pt {
+    const t: [number, number][] = [[0.5, 7.5], [7.5, 7.5], [7.5, 0.5], [0.5, 0.5], [4, 4]];
+    return { x: t[step][0] * SQ, y: t[step][1] * SQ };
+  }
+
+  startBoardCal(): string | null {
+    if (this.input.source !== "hand" || !this.input.p3) return "手をカメラに映してから実行してください";
+    this.held = null; this.input.holding = false;
+    this.cal = { step: 0, samples: [] };
+    return null;
+  }
+  cancelBoardCal() { this.cal = null; }
+
+  private captureCal(p: Pos) {
+    const cal = this.cal;
+    if (!cal) return;
+    if (!p.p3) { this.onToast?.("手が見えていません。もう一度つまんでください"); return; }
+    cal.samples.push({ p: p.p3, b: this.calTarget(cal.step) });
+    cal.step++; sfx.grab();
+    if (cal.step < 5) return;
+    this.cal = null;
+    const map = fitBoardMap(cal.samples);
+    if (!map) { this.onToast?.("うまく計算できませんでした。もう一度どうぞ", 4000); return; }
+    const err = fitError(map, cal.samples), tilt = tiltDegrees(map);
+    this.boardMap = map; this.mapOn = true; this.mapInfo = { tilt, err };
+    store.set("boardMap", map); store.set("mapOn", true); store.set("mapInfo", this.mapInfo);
+    sfx.win();
+    this.onToast?.(`位置合わせが完了しました(手の動く面の傾き 約${Math.round(tilt)}°、誤差 約${Math.round(err)}px)`, 5000);
+  }
+
   // ---------- 入力 ----------
   private board(p: Pt): Pt { const b = this.view.unproject(p.x, p.y); return { x: Math.min(S, Math.max(0, b.x)), y: Math.min(S, Math.max(0, b.y)) }; }
 
   /** 現在のカーソル位置(盤面座標)。未入力なら null */
-  get cursor(): Pt | null { return this.input.screen.x < 0 ? null : this.cursorAt(this.input.screen, this.input.depth); }
+  get cursor(): Pt | null { return this.input.screen.x < 0 ? null : this.cursorAt(this.input.screen, this.input.depth, this.input.p3); }
 
   /**
    * 画面上の手の位置 s と手の大きさ r から、盤面上のカーソル位置を求める。
@@ -115,7 +157,12 @@ export class Game {
    * 掴んだあと(奥行き操作): 掴んだ瞬間の駒の位置を起点に、左右は手の左右の動き、前後(盤の奥行き)は手を突き出した量で動かす。
    *   手を上下に動かす動きも、少しだけ効かせる(手を上げて奥へ動かす癖でも動くように)。
    */
-  cursorAt(s: Pt, r: number): Pt {
+  cursorAt(s: Pt, r: number, p3: P3 | null): Pt {
+    // 実位置マッピング: 手の3次元位置を、そのまま盤の位置に対応させる(掴む前も掴んだ後も同じ対応)
+    if (this.boardMap && this.mapOn && p3 && this.input.source === "hand" && !this.cal) {
+      const b = applyBoardMap(this.boardMap, p3);
+      return { x: Math.min(S, Math.max(0, b.x)), y: Math.min(S, Math.max(0, b.y)) };
+    }
     const hb = this.board(s), pb = this.push;
     if (!this.held || !pb || !this.depthMode || !(r > 0) || !(pb.r0 > 0)) return hb;
     let dz = Math.max(-0.8, Math.min(0.8, (r - pb.r0) / pb.r0));              // 手が大きくなった割合(近づいた=前に突き出した)
@@ -149,7 +196,8 @@ export class Game {
   }
 
   private onPinchStart(past: Pos, now: Pos) {
-    const sq = this.pickSquare(this.board(past)) ?? this.pickSquare(this.board(now));
+    if (this.cal) { this.captureCal(past); return; }                       // キャリブレーション中は、駒を掴まずに位置を記録する
+    const sq = this.pickSquare(this.cursorAt(past, past.r, past.p3)) ?? this.pickSquare(this.cursorAt(now, now.r, now.p3));
     if (sq && this.tryGrab(sq)) {
       // 奥行き操作の起点: 駒の元の位置(吸着後)と、そのときの手の位置・大きさ
       this.push = this.input.source === "hand" && past.r > 0 ? { origin: this.sqCenter(sq), hb0: this.board(past), r0: past.r } : null;
@@ -198,11 +246,12 @@ export class Game {
   private onPinchEnd(past: Pos, reason: PinchEndReason) {
     if (!this.held) return;
     if (reason === "lost") { this.held = null; this.push = null; this.input.holding = false; this.onToast?.("手を見失ったので駒を戻しました"); return; }
-    void this.drop(this.snapTarget(this.cursorAt(past, past.r)));           // 離す動作で手がぶれる前の位置(遅延補正)
+    void this.drop(this.snapTarget(this.cursorAt(past, past.r, past.p3)));           // 離す動作で手がぶれる前の位置(遅延補正)
   }
 
   canMoveNow(color: Color): boolean {
     if (performance.now() < this.turnLockUntil) return false;
+    if (this.cal) return false;
     if (this.thinking || this.result || this.chess.turn() !== color || this.anim?.own) return false;
     switch (this.mode.kind) {
       case "ai": return color === "w";

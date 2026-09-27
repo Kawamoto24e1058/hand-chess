@@ -250,6 +250,14 @@ export class App {
     const setSense = (i: number) => { this.senseIdx = i; this.game.depthSense = SENSE[i][1]; store.set("senseIdx", i); setText($("toolDepthSense"), `奥行きの感度: ${SENSE[i][0]}`); };
     $("toolDepthSense").onclick = () => setSense((this.senseIdx + 1) % SENSE.length);
     setSense(this.senseIdx);
+    $("toolMapCal").onclick = () => {
+      const err = this.game.startBoardCal();
+      this.toast(err ?? "光っている位置に手を持っていき、順につまんでください(Escでやめる)", err ? 4000 : 5000);
+    };
+    $("toolMap").onclick = () => {
+      if (!this.game.boardMap) return this.toast("先に「盤の位置合わせ(四隅)」をしてください", 3500);
+      this.game.mapOn = !this.game.mapOn; store.set("mapOn", this.game.mapOn);
+    };
     $("toolDepth").onclick = () => { this.game.depthMode = !this.game.depthMode; store.set("depth", this.game.depthMode); };
     $("toolRelock").onclick = () => { this.input.releaseLock(); this.toast("いちばん近くの手を追従し直します", 2200); };
     $("toolHints").onclick = () => { this.hints = !this.hints; store.set("hints", this.hints); };
@@ -274,6 +282,7 @@ export class App {
   private wireKeys() {
     addEventListener("keydown", (e) => {
       if (this.screen !== "game" || (e.target as HTMLElement).tagName === "INPUT" || e.metaKey || e.ctrlKey) return;
+      if (e.key === "Escape" && this.game.cal) { this.game.cancelBoardCal(); this.toast("位置合わせをやめました", 2000); return; }
       const k = e.key.toLowerCase();
       if (k === "d") this.debug = !this.debug;
       else if (k === "e") this.explain = !this.explain;
@@ -347,6 +356,7 @@ export class App {
     // ツールの表示
     setText($("toolSound"), `効果音: ${audioState.enabled ? "ON" : "OFF"}`);
     setText($("toolCam"), `カメラ: ${inp.cameraState === "off" ? "OFF" : "ON"}`);
+    setText($("toolMap"), `実位置: ${!g.boardMap ? "未設定" : g.mapOn ? "ON" : "OFF"}`);
     setText($("toolDepth"), `奥行き操作: ${g.depthMode ? "ON" : "OFF"}`);
     setText($("toolHints"), `ヒント: ${this.hints ? "ON" : "OFF"}`);
     const focus = g.held?.type ?? g.hoverInfo()?.type;          // 指している/掴んでいる駒をガイドで光らせる
