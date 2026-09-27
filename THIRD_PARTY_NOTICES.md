@@ -22,3 +22,7 @@ Stockfish を含めて再配布する場合は、GPL-3.0 の条件(ソースの�
 ## chess.js (BSD-2-Clause)
 
 - https://github.com/jhlywa/chess.js — ルール判定・PGN/FEN処理に使用。
+
+## three.js (MIT)
+
+- https://github.com/mrdoob/three.js — タイトル画面の3D背景に使用。

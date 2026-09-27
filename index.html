@@ -12,26 +12,28 @@
   <script type="module" src="/src/client/main.ts"></script>
 </head>
 <body>
+<canvas id="bg3d" aria-hidden="true"></canvas>
 <div id="app">
 
-  <!-- ===== スタート画面 ===== -->
-  <section id="screen-start" class="screen start">
-    <div class="bg" aria-hidden="true">
-      <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
-      <div class="floor"></div>
-      <span class="float" style="--x:6%;--d:19s;--s:64px;--o:.10;--delay:-2s">♞</span>
-      <span class="float" style="--x:18%;--d:24s;--s:38px;--o:.07;--delay:-11s">♟</span>
-      <span class="float" style="--x:31%;--d:21s;--s:84px;--o:.06;--delay:-6s">♜</span>
-      <span class="float" style="--x:46%;--d:27s;--s:44px;--o:.08;--delay:-15s">♝</span>
-      <span class="float" style="--x:59%;--d:22s;--s:72px;--o:.07;--delay:-9s">♛</span>
-      <span class="float" style="--x:72%;--d:26s;--s:40px;--o:.09;--delay:-3s">♟</span>
-      <span class="float" style="--x:84%;--d:20s;--s:78px;--o:.06;--delay:-13s">♚</span>
-      <span class="float" style="--x:93%;--d:25s;--s:48px;--o:.08;--delay:-8s">♞</span>
+  <!-- ===== タイトル画面: 3D背景 + STARTボタンだけ ===== -->
+  <section id="screen-title" class="screen title">
+    <div class="title-top">
+      <div class="brand"><span class="logo">♞</span><span>Hand Chess</span></div>
     </div>
+    <div class="title-main">
+      <p class="eyebrow"><span class="pulse"></span>MediaPipe × Stockfish × Cloudflare</p>
+      <h1 class="title-logo">Hand<span>Chess</span></h1>
+      <p class="title-lead">つまんで、動かして、指す。</p>
+      <button id="startBtn" class="btn-start"><span>START</span><i aria-hidden="true">→</i></button>
+      <p class="title-hint">Webカメラの前で親指と人差し指をつまむだけ。インストール不要。</p>
+    </div>
+  </section>
 
+  <!-- ===== メニュー: モード選択・マッチング・設定 ===== -->
+  <section id="screen-start" class="screen start" hidden>
     <div class="wrap">
       <nav class="topbar">
-        <div class="brand"><span class="logo">♞</span><span>Hand Chess</span></div>
+        <button id="backTitle" class="ghost-btn">← タイトル</button>
         <div class="profile">
           <label class="switch" title="Webカメラで手を追跡して操作します">
             <input id="useCamera" type="checkbox" checked><span class="track"></span><span class="switch-label">✋ カメラ操作</span>
@@ -40,25 +42,9 @@
         </div>
       </nav>
 
-      <header class="hero">
-        <p class="eyebrow"><span class="pulse"></span>MediaPipe × Stockfish × Cloudflare</p>
-        <h1>つまんで、動かして、<span class="grad">指す。</span></h1>
-        <p class="lead">Webカメラの前で親指と人差し指をつまむだけ。インストール不要、ブラウザだけで遊べる「手」で指すチェス。</p>
-        <div class="cta">
-          <button id="heroAI" class="btn-hero">AIと対戦する <span aria-hidden="true">→</span></button>
-          <a class="ghost" href="#modes">ほかの遊び方</a>
-        </div>
-
-        <div class="demo" aria-hidden="true">
-          <div class="demo-board">
-            <div class="sq l"></div><div class="sq d"></div><div class="sq l"></div><div class="sq d"></div><div class="sq l"></div>
-            <div class="mover">
-              <span class="piece">♞</span>
-              <span class="hand"><i class="f f1"></i><i class="f f2"></i></span>
-            </div>
-          </div>
-          <p class="demo-cap">つまむ → 持ち上げる → 離す</p>
-        </div>
+      <header class="menu-head">
+        <h2>どう遊ぶ？</h2>
+        <p>モードを選んで、カメラの前に手を出してください。</p>
       </header>
 
       <div id="invite" class="invite" hidden>

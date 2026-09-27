@@ -11,7 +11,7 @@ import type { Color } from "../shared/protocol";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const setText = (el: HTMLElement, text: string) => { if (el.textContent !== text) el.textContent = text; };
-type Screen = "start" | "lobby" | "game";
+type Screen = "title" | "start" | "lobby" | "game";
 
 const validRoom = (c: string) => /^[A-Z0-9]{4,8}$/.test(c);
 
@@ -21,7 +21,10 @@ export class App {
   private game = new Game(this.input, this.view);
   private canvas = $<HTMLCanvasElement>("board");
   private ctx = this.canvas.getContext("2d")!;
-  private screen: Screen = "start";
+  private screen: Screen = "title";
+  private bg = $<HTMLCanvasElement>("bg3d");
+  private scene: { setMode(m: "title" | "menu"): void; start(): void; stop(): void } | null = null;
+  private sceneFailed = false;
   private explain = false;
   private debug = false;
   private cancelMatch: (() => void) | null = null;
@@ -43,13 +46,38 @@ export class App {
 
     this.wireStart(); this.wireGame(); this.wireModal(); this.wireKeys();
     this.handleInviteLink();
+    this.show(this.hasInvite() ? "start" : "title");
     requestAnimationFrame((t) => this.frame(t));
   }
 
   // ---------- 画面遷移 ----------
   private show(s: Screen) {
     this.screen = s;
-    for (const name of ["start", "lobby", "game"] as const) $(`screen-${name}`).hidden = name !== s;
+    for (const name of ["title", "start", "lobby", "game"] as const) $(`screen-${name}`).hidden = name !== s;
+    void this.ensureScene();
+    this.applySceneState();
+    window.scrollTo(0, 0);
+  }
+
+  /** 3D背景(three.jsは重いので、最初の画面を出したあとに読み込む) */
+  private async ensureScene() {
+    if (this.scene || this.sceneFailed) return;
+    try {
+      const mod = await import("./scene3d");
+      this.scene = new mod.StartScene(this.bg);
+      this.applySceneState();
+    } catch (e) {
+      console.warn("3D背景を使えません(背景は簡易表示になります)", e);
+      this.sceneFailed = true;
+    }
+  }
+
+  private applySceneState() {
+    const visible = this.screen === "title" || this.screen === "start";
+    this.bg.classList.toggle("off", !visible);
+    if (!this.scene) return;
+    this.scene.setMode(this.screen === "start" ? "menu" : "title");
+    if (visible) this.scene.start(); else this.scene.stop();     // 対局中はGPUを使わない
   }
 
   private toast(msg: string, ms = 3200) {
@@ -83,10 +111,14 @@ export class App {
     this.show("start");
   }
 
+  private hasInvite(): boolean {
+    return validRoom(new URLSearchParams(location.search).get("room")?.toUpperCase() ?? "");
+  }
+
   // ---------- スタート画面 ----------
   private wireStart() {
-    // ヒーローのボタンはAI対戦と同じ
-    $("heroAI").onclick = () => $("startAI").click();
+    $("startBtn").onclick = () => this.show("start");
+    $("backTitle").onclick = () => this.show("title");
 
     // AIの強さ(見た目はセグメント、値は非表示のselectが持つ)
     const level = $<HTMLSelectElement>("aiLevel");
