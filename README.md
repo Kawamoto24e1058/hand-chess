@@ -5,7 +5,7 @@
 **つまんで、動かして、指す。**
 Webカメラの前で親指と人差し指をつまむだけ。インストール不要、ブラウザだけで遊べる「手」で指すチェス。
 
-[**▶ 遊んでみる**](https://hand-chess.workers.dev) &nbsp;·&nbsp; [GitHub](https://github.com/Kawamoto24e1058/hand-chess)
+[**▶ 遊んでみる**](https://hand-chess.momotech.workers.dev) &nbsp;·&nbsp; [GitHub](https://github.com/Kawamoto24e1058/hand-chess)
 
 `MediaPipe` × `Stockfish (WASM)` × `Cloudflare Workers / Durable Objects` × `TypeScript`
 
@@ -61,7 +61,7 @@ npm run dev        # http://localhost:5173  (Worker + Durable Objects もロー�
 
 ```bash
 npm run typecheck                                     # クライアント/Workerの型チェック
-node scripts/e2e-server.mjs http://localhost:5173     # サーバーの結合テスト(dev起動中に実行)
+node scripts/e2e-server.mjs http://localhost:5173     # サーバーの結合テスト(dev起動中に実行。本番URLも指定可)
 ```
 
 カメラは `localhost` かHTTPSでのみ使えます。

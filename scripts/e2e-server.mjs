@@ -23,8 +23,11 @@ function client(url) {
 const code = "T" + Math.random().toString(36).slice(2, 6).toUpperCase();
 const a = client(`${BASE}/ws/room/${code}?tc=5%2B3`), b = client(`${BASE}/ws/room/${code}`);
 await Promise.all([a.opened, b.opened]);
-a.send({ t: "join", name: "Alice" }); b.send({ t: "join", name: "Bob" });
-const ja = await a.wait((m) => m.t === "joined"), jb = await b.wait((m) => m.t === "joined");
+// 入室は順番に(ネットワーク越しでは同時に送ると到着順が入れ替わり、白黒が逆になる)
+a.send({ t: "join", name: "Alice" });
+const ja = await a.wait((m) => m.t === "joined");
+b.send({ t: "join", name: "Bob" });
+const jb = await b.wait((m) => m.t === "joined");
 ok(ja?.color === "w" && jb?.color === "b", "入室順に白・黒が割り当てられる");
 const sync = await a.wait((m) => m.t === "sync");
 ok(sync?.timeControl.baseMs === 300000, "持ち時間(5+3)が最初の入室者の指定で確定");
@@ -68,7 +71,8 @@ const c2 = "T" + Math.random().toString(36).slice(2, 6).toUpperCase();
 const p = client(`${BASE}/ws/room/${c2}?tc=none`), q = client(`${BASE}/ws/room/${c2}`);
 await Promise.all([p.opened, q.opened]);
 p.send({ t: "join", name: "P" }); await p.wait((m) => m.t === "sync"); q.send({ t: "join", name: "Q" }); await q.wait((m) => m.t === "sync");
-for (const [who, from, to] of [[p, "f2", "f3"], [q, "e7", "e5"], [p, "g2", "g4"], [q, "d8", "h4"]]) { who.send({ t: "move", move: { from, to } }); await sleep(120); }
+await sleep(200);
+for (const [who, from, to] of [[p, "f2", "f3"], [q, "e7", "e5"], [p, "g2", "g4"], [q, "d8", "h4"]]) { who.send({ t: "move", move: { from, to } }); await sleep(400); }
 const mate = await p.wait((m) => m.t === "gameover");
 ok(mate?.result.reason === "checkmate" && mate.result.winner === "b", "チェックメイトを検出して勝敗を配信");
 
