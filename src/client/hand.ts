@@ -68,6 +68,13 @@ export class HandInput {
     this.video.playsInline = true; this.video.muted = true;
   }
 
+  /** つまむ進み具合(0: 開いている 〜 1: 掴む閾値に到達)。カーソルの周りの表示に使う */
+  get pinchProgress(): number {
+    if (this.source !== "hand") return this.pinch ? 1 : 0;
+    if (this.pinch) return 1;
+    return Math.min(1, Math.max(0, (this.thr.release - this.pinchRatio) / Math.max(1e-3, this.thr.release - this.thr.grab)));
+  }
+
   // ---------- カメラ ----------
   async startCamera(): Promise<void> {
     if (this.cameraState === "loading" || this.cameraState === "ready") return;

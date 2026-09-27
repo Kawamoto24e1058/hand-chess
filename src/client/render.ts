@@ -1,13 +1,13 @@
 import type { Game } from "./game";
 import { toScreen } from "./hand";
 import { glyphOf, sqName } from "./pieces";
-import { reasonText, resultTitle } from "./text";
+import { PIECE_INFO, reasonText, resultTitle } from "./text";
 import { S, SQ } from "./projection";
 import type { Color } from "../shared/protocol";
 
 const K = 0.8;   // projection.ts と同じ盤の縮小率(駒の大きさの基準)
 
-export interface RenderOpts { explain: boolean; debug: boolean }
+export interface RenderOpts { explain: boolean; debug: boolean; labels?: boolean; hints?: boolean }
 
 export function draw(ctx: CanvasRenderingContext2D, g: Game, opts: RenderOpts) {
   const { view, input } = g;
@@ -126,6 +126,9 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
 
   if (opts.explain) drawExplain(ctx, g);
 
+  if (opts.labels) drawPieceBadges(ctx, g);
+  drawCursorHelp(ctx, g);
+
   // 終局バナー
   if (g.result && !g.anim) {
     ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(0, S / 2 - 70, S, 140);
@@ -147,6 +150,74 @@ function drawDebug(ctx: CanvasRenderingContext2D, g: Game) {
   ctx.fillStyle = "#0f0"; ctx.font = "14px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
   ctx.fillText(`detect ${input.fps}fps  pinch ${input.pinchRatio.toFixed(2)} (img ${input.imgRatio.toFixed(2)})  src ${input.source}  cam ${input.cameraState}`, 8, 8);
   ctx.fillText(`thr grab<${input.thr.grab.toFixed(2)} rel>${input.thr.release.toFixed(2)}/${input.thr.releaseHeld.toFixed(2)}`, 8, 26);
+}
+
+
+const roundRect = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+};
+
+/** 各駒の足元に、駒の名前(ポ・ナ・ビ・ル・ク・キ)の小さなバッジを出す */
+function drawPieceBadges(ctx: CanvasRenderingContext2D, g: Game) {
+  const { view } = g, board = g.chess.board();
+  ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const p = board[r][c]; if (!p) continue;
+    const sq = sqName(c, r);
+    if (g.held?.from === sq || g.anim?.to === sq) continue;
+    const ctr = g.sqCenter(sq), q = view.project(ctr.x, ctr.y + SQ * 0.36, 0);
+    ctx.fillStyle = p.color === "w" ? "rgba(244,231,192,.92)" : "rgba(38,38,74,.92)";
+    ctx.strokeStyle = p.color === "w" ? "rgba(0,0,0,.5)" : "rgba(125,140,255,.9)"; ctx.lineWidth = 1.5;
+    roundRect(ctx, q.x - 10, q.y - 9, 20, 18, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = p.color === "w" ? "#1b1b1b" : "#e6ecff";
+    ctx.fillText(PIECE_INFO[p.type].short, q.x, q.y + 0.5);
+  }
+}
+
+/** カーソルの近くに、つまむ進み具合と、指している駒/掴んでいる駒の名前・動き方を出す */
+function drawCursorHelp(ctx: CanvasRenderingContext2D, g: Game) {
+  const cur = g.cursor;
+  if (!cur || g.result) return;
+  const { input, view } = g, q = view.project(cur.x, cur.y);
+  const hov = g.hoverInfo(), held = g.held;
+
+  // つまむ進み具合(手のとき): 指を閉じるほど円が閉じ、閉じきると掴む
+  const prog = input.pinchProgress;
+  if (input.source === "hand" && !held && hov?.movable && prog > 0.02) {
+    ctx.strokeStyle = "rgba(102,224,255,.95)"; ctx.lineWidth = 5; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.arc(q.x, q.y, 24, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * prog); ctx.stroke(); ctx.lineCap = "butt";
+  }
+
+  // 名前と動き方のふきだし
+  let title = "", sub = "", tone = "#6cf";
+  if (held) {
+    const info = PIECE_INFO[held.type], snap = g.snapTarget(cur), legal = !!snap && held.targets.has(snap);
+    title = `${info.name}を持っています` + (legal ? `  →  ${snap}${held.captures.has(snap!) ? "(取る!)" : ""}` : "");
+    sub = legal ? "指を開くと、ここに置きます" : "緑の丸=行ける場所 / 赤=取れる駒";
+    tone = legal ? "#7dffa0" : "#fc6";
+  } else if (hov) {
+    const info = PIECE_INFO[hov.type];
+    const mine = g.myColor ? hov.color === g.myColor : true;
+    title = `${mine ? "" : "相手の"}${info.name}`;
+    sub = hov.movable ? `${info.move}\nつまむと掴めます` : mine ? `${info.move}\n今は動かせません` : info.move;
+    tone = hov.movable ? "#6cf" : "#9aa5bd";
+  } else return;
+
+  const lines = [title, ...sub.split("\n")];
+  ctx.font = "bold 15px sans-serif";
+  const w = Math.max(...lines.map((l, i) => { ctx.font = i === 0 ? "bold 15px sans-serif" : "12px sans-serif"; return ctx.measureText(l).width; })) + 20;
+  const h = 14 + lines.length * 19;
+  let x = q.x + 30, y = q.y - h - 18;
+  if (x + w > S - 6) x = q.x - w - 30;
+  if (y < 6) y = q.y + 30;
+  ctx.fillStyle = "rgba(10,13,20,.9)"; ctx.strokeStyle = tone; ctx.lineWidth = 1.5;
+  roundRect(ctx, x, y, w, h, 9); ctx.fill(); ctx.stroke();
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  lines.forEach((l, i) => {
+    ctx.font = i === 0 ? "bold 15px sans-serif" : "12px sans-serif";
+    ctx.fillStyle = i === 0 ? tone : "#cfd6e6";
+    ctx.fillText(l, x + 10, y + 16 + i * 19);
+  });
 }
 
 /** LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄) */

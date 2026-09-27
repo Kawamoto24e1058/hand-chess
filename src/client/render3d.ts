@@ -54,6 +54,7 @@ const HAND_SCALE = 0.95;             // ゲーム画面の手の大きさ(タイ
 const HAND_TILT = 0.15;             // 手を自分の側(画面の手前)から差し出す向きに傾ける(前腕が画面の下へ抜ける)
 const HELD_LIFT = 1.15;             // 掴んだ駒を持ち上げる高さ(ワールド)
 const MAX_TARGETS = 32;
+const MAX_MOVABLE = 20;
 const MAX_PARTICLES = 90;
 
 type Stat = { group: THREE.Group; type: string; color: string };
@@ -73,6 +74,12 @@ export class GameRenderer {
   private lastMarks: THREE.Mesh[] = [];
   private targetMarks: THREE.Mesh[] = [];
   private hoverRing: THREE.Mesh;
+  private pieceRing: THREE.Mesh;                        // 今掴もうとしている駒の足元のリング
+  private movableRings: THREE.Mesh[] = [];              // 動かせる駒の足元の印
+  private captureRings: THREE.Mesh[] = [];              // 取れるマスの赤い印
+  private ghost: Stat | null = null;                    // 置き先に出す、半透明の駒の予告
+  private ghostPool = new Map<string, THREE.Group[]>();
+  private ghostMats: { w: THREE.Material; b: THREE.Material };
   private checkMark: THREE.Mesh;
   private points: THREE.Points;
   private hand: HandRig | null = null;
@@ -108,6 +115,13 @@ export class GameRenderer {
     const disc = new THREE.CircleGeometry(0.17, 28);
     for (let i = 0; i < MAX_TARGETS; i++) this.targetMarks.push(flat(0x50dc78, disc, 0.7));
     this.hoverRing = flat(0x66ccff, new THREE.RingGeometry(0.4, 0.47, 40), 0.95);
+    this.pieceRing = flat(0x66e0ff, new THREE.RingGeometry(0.46, 0.56, 44), 0.9);
+    const thin = new THREE.RingGeometry(0.43, 0.47, 40), red = new THREE.RingGeometry(0.34, 0.44, 40);
+    for (let i = 0; i < MAX_MOVABLE; i++) this.movableRings.push(flat(0x66e0ff, thin, 0.4));
+    for (let i = 0; i < MAX_TARGETS; i++) this.captureRings.push(flat(0xff5a5a, red, 0.85));
+    // 置き先の予告(半透明の駒)
+    const ghostOf = (m: THREE.Material) => { const c = m.clone(); c.transparent = true; c.opacity = 0.42; c.depthWrite = false; return c; };
+    this.ghostMats = { w: ghostOf(this.mats.ivory), b: ghostOf(this.mats.navy) };
 
     // パーティクル
     const geo = new THREE.BufferGeometry();
@@ -161,7 +175,7 @@ export class GameRenderer {
   }
 
   // ---------- 毎フレーム ----------
-  render(g: Game) {
+  render(g: Game, opts: { hints: boolean } = { hints: true }) {
     const now = performance.now();
     this.view.step();
     if (g.shake > 0.3) {                                // 駒を取った時の画面の揺れ
@@ -224,6 +238,7 @@ export class GameRenderer {
     }
 
     this.updateMarks(g, cur, now);
+    this.updateHints(g, cur, now, opts.hints, bottom);
     this.updateParticles(g);
     this.updateHand(g, cur);
     this.renderer.render(this.scene, this.camera);
@@ -240,8 +255,11 @@ export class GameRenderer {
       const sq = g.lastMove ? (i === 0 ? g.lastMove.from : g.lastMove.to) : null;
       if (sq) this.place(m, sq, g); else m.visible = false;
     });
-    const targets = g.held ? [...g.held.targets] : [];
-    this.targetMarks.forEach((m, i) => { if (targets[i]) this.place(m, targets[i], g); else m.visible = false; });
+    const quiet = g.held ? [...g.held.targets].filter((t) => !g.held!.captures.has(t)) : [];
+    const caps = g.held ? [...g.held.captures] : [];
+    const pulse = 1 + 0.14 * Math.sin(now / 170);
+    this.targetMarks.forEach((m, i) => { if (quiet[i]) { this.place(m, quiet[i], g); m.scale.setScalar(pulse); } else m.visible = false; });
+    this.captureRings.forEach((m, i) => { if (caps[i]) { this.place(m, caps[i], g); m.scale.setScalar(pulse); } else m.visible = false; });
 
     const king = g.kingInCheckSquare;
     if (king) { this.place(this.checkMark, king, g); (this.checkMark.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.2 * Math.sin(now / 120); }
@@ -252,6 +270,56 @@ export class GameRenderer {
       this.place(this.hoverRing, t, g);
       (this.hoverRing.material as THREE.MeshBasicMaterial).color.set(g.input.pinch ? 0xff6666 : 0x66ccff);
     } else this.hoverRing.visible = false;
+  }
+
+
+  /** 「どれを掴もうとしているか」「どこに置けるか」の表示 */
+  private updateHints(g: Game, cur: { x: number; y: number } | null, now: number, hints: boolean, bottom: string) {
+    // 動かせる駒の足元に、ゆっくり脈打つ印(ヒント)
+    const movable = hints && !g.held && !g.anim ? [...g.movableSquares()] : [];
+    this.movableRings.forEach((m, i) => {
+      if (movable[i]) { this.place(m, movable[i], g); (m.material as THREE.MeshBasicMaterial).opacity = 0.28 + 0.22 * Math.sin(now / 320 + i); } else m.visible = false;
+    });
+
+    // 今掴もうとしている駒: 足元のリングが、つまむにつれて濃く・大きくなる
+    const hov = g.hoverInfo();
+    if (hov?.movable) {
+      const prog = g.input.pinchProgress;
+      this.place(this.pieceRing, hov.sq, g);
+      this.pieceRing.scale.setScalar(1.12 - 0.12 * prog);
+      (this.pieceRing.material as THREE.MeshBasicMaterial).opacity = 0.55 + 0.45 * prog;
+    } else this.pieceRing.visible = false;
+
+    // 置き先の予告: 掴んでいる駒を、吸着する先のマスに半透明で出す
+    const held = g.held;
+    const t = held && cur ? g.snapTarget(cur) : null;
+    if (held && t && held.targets.has(t)) {
+      if (!this.ghost || this.ghost.type !== held.type || this.ghost.color !== held.color) {
+        if (this.ghost) this.releaseGhost(this.ghost);
+        this.ghost = this.acquireGhost(held.type, held.color, bottom);
+      }
+      const c = g.sqCenter(t);
+      this.ghost.group.position.set(toWorldX(c.x), 0, toWorldZ(c.y));
+      if (held.type === "n") this.ghost.group.rotation.y = this.knightYaw(held.color, bottom);
+    } else if (this.ghost) { this.releaseGhost(this.ghost); this.ghost = null; }
+  }
+
+  private acquireGhost(type: string, color: string, bottom: string): Stat {
+    const key = color + type;
+    let grp = this.ghostPool.get(key)?.pop();
+    if (!grp) {
+      grp = buildPiece(type as PieceType, color === "w" ? this.ghostMats.w : this.ghostMats.b);
+      grp.traverse((o) => { (o as THREE.Mesh).castShadow = false; (o as THREE.Mesh).receiveShadow = false; o.renderOrder = 3; });
+    }
+    grp.visible = true; this.scene.add(grp);
+    if (type === "n") grp.rotation.y = this.knightYaw(color, bottom);
+    return { group: grp, type, color };
+  }
+
+  private releaseGhost(s: Stat) {
+    this.scene.remove(s.group);
+    const key = s.color + s.type, list = this.ghostPool.get(key) ?? [];
+    list.push(s.group); this.ghostPool.set(key, list);
   }
 
   private updateParticles(g: Game) {

@@ -161,6 +161,11 @@
       </div>
       <div id="rematchPrompt" class="prompt" hidden>相手が再戦を申し込んでいます</div>
 
+      <details class="guide" id="guide" open>
+        <summary>駒ガイド <small>(指している駒が光ります)</small></summary>
+        <ul id="guideList"></ul>
+      </details>
+
       <ol id="moves" class="moves"></ol>
 
       <div class="player me" id="playerBottom"><span class="dot" id="dotBottom"></span><span class="pname" id="nameBottom"></span><span class="clock" id="clockBottom"></span></div>
@@ -178,6 +183,8 @@
           <button id="tool3d">3D視点</button>
           <button id="toolSound">効果音: ON</button>
           <button id="toolCam">カメラ: ON</button>
+          <button id="toolLabels">駒名: ON</button>
+          <button id="toolHints">ヒント: ON</button>
           <button id="toolCalib">キャリブレーション (C)</button>
           <button id="toolFilter">フィルタ: ON (F)</button>
           <button id="toolExplain">解説表示 (E)</button>

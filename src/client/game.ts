@@ -12,7 +12,7 @@ export type GameMode =
   | { kind: "local" }
   | { kind: "online"; room: string; tc: string };
 
-export interface Held { from: string; glyph: string; type: string; color: Color; targets: Set<string> }
+export interface Held { from: string; glyph: string; type: string; color: Color; targets: Set<string>; captures: Set<string> }
 export interface Anim {
   to: string; glyph: string; type: string; color: Color; own: boolean; t0: number; dur: number;
   x0: number; y0: number; x1: number; y1: number;
@@ -123,7 +123,47 @@ export class Game {
   }
 
   private onPinchStart(past: Pt, now: Pt) {
-    if (!this.tryGrab(this.sqAt(this.board(past)))) this.tryGrab(this.sqAt(this.board(now)));
+    const sq = this.pickSquare(this.board(past)) ?? this.pickSquare(this.board(now));
+    if (sq) this.tryGrab(sq);
+  }
+
+  // ---------- 「どの駒を掴もうとしているか」の判定(表示と掴む動作で同じ関数を使う) ----------
+  private movableCache = { fen: "", flag: false, set: new Set<string>() };
+
+  /** 今の手番で動かせる駒のマス(動ける場所がある駒だけ)。自分の番でなければ空 */
+  movableSquares(): Set<string> {
+    const fen = this.chess.fen(), can = this.canMoveNow(this.chess.turn());
+    const c = this.movableCache;
+    if (c.fen === fen && c.flag === can) return c.set;
+    const set = new Set<string>();
+    if (can) for (const m of this.chess.moves({ verbose: true })) set.add(m.from);
+    this.movableCache = { fen, flag: can, set };
+    return set;
+  }
+
+  /** カーソルが指している「掴める駒」。真下の駒を優先し、少しずれていても近い駒に吸着する */
+  pickSquare(p: Pt): string | null {
+    if (this.held) return null;
+    const movable = this.movableSquares();
+    if (!movable.size) return null;
+    const own = this.sqAt(p);
+    if (own && movable.has(own)) return own;
+    let best: string | null = null, bd = SQ * 0.62;
+    for (const sq of movable) {
+      const c = this.sqCenter(sq), d = Math.hypot(c.x - p.x, c.y - p.y);
+      if (d < bd) { bd = d; best = sq; }
+    }
+    return best;
+  }
+
+  /** 指している駒の情報(掴む前の表示用)。動かせない駒・相手の駒でも名前は出す */
+  hoverInfo(): { sq: string; type: string; color: Color; movable: boolean } | null {
+    const cur = this.cursor;
+    if (this.held || !cur) return null;
+    const pick = this.pickSquare(cur);
+    const sq = pick ?? this.sqAt(cur);
+    const p = sq ? this.chess.get(sq as never) : null;
+    return sq && p ? { sq, type: p.type, color: p.color, movable: pick === sq } : null;
   }
 
   private onPinchEnd(past: Pt, reason: PinchEndReason) {
@@ -145,9 +185,11 @@ export class Game {
     if (this.held || !sq) return false;
     const p = this.chess.get(sq as never);
     if (!p || !this.canMoveNow(p.color)) return false;
-    const targets = new Set(this.chess.moves({ square: sq as never, verbose: true }).map((m) => m.to));
+    const mv = this.chess.moves({ square: sq as never, verbose: true });
+    const targets = new Set(mv.map((m) => m.to));
     if (!targets.size) return false;
-    this.held = { from: sq, glyph: glyphOf(p.type), type: p.type, color: p.color, targets };
+    const captures = new Set(mv.filter((m) => m.captured).map((m) => m.to));
+    this.held = { from: sq, glyph: glyphOf(p.type), type: p.type, color: p.color, targets, captures };
     this.input.holding = true;
     sfx.grab();
     return true;
@@ -296,7 +338,9 @@ export class Game {
     if (!this.held) return;
     const p = this.chess.get(this.held.from as never);
     if (!p || p.color !== this.held.color || !this.canMoveNow(p.color)) { this.held = null; this.input.holding = false; return; }
-    this.held.targets = new Set(this.chess.moves({ square: this.held.from as never, verbose: true }).map((m) => m.to));
+    const mv = this.chess.moves({ square: this.held.from as never, verbose: true });
+    this.held.targets = new Set(mv.map((m) => m.to));
+    this.held.captures = new Set(mv.filter((m) => m.captured).map((m) => m.to));
   }
 
   private setClock(c: ClockState) { this.clockBase = { ...c, at: performance.now() }; }

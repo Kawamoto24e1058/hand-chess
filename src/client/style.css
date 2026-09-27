@@ -163,6 +163,14 @@ canvas#board3d { position: absolute; inset: 0; z-index: 1; width: 100%; height: 
 .roombox { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 8px 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .roombox b { font: 700 18px ui-monospace, monospace; letter-spacing: .15em; color: var(--gold); }
 .prompt { background: #2a2414; border: 1px solid var(--gold); border-radius: 10px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.guide { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+.guide summary { cursor: pointer; font-size: 14px; color: var(--text); }
+.guide summary small { color: var(--dim); }
+.guide ul { list-style: none; margin: 6px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.guide li { display: grid; grid-template-columns: 1.6em 5.6em 1fr; gap: 4px; align-items: baseline; font-size: 12.5px; padding: 2px 6px; border-radius: 7px; border: 1px solid transparent; color: #b6bfd3; transition: background .12s, border-color .12s; }
+.guide li b { color: var(--text); font-weight: 700; }
+.guide li .g { font-size: 17px; line-height: 1; color: var(--gold); }
+.guide li.on { background: rgba(102,204,255,.14); border-color: var(--accent); color: var(--text); }
 .moves { list-style: none; margin: 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; height: 168px; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; align-content: start; font: 14px/1.7 ui-monospace, "SF Mono", monospace; counter-reset: n; }
 .moves li { white-space: nowrap; }
 .moves li:nth-child(odd)::before { counter-increment: n; content: counter(n) ". "; color: var(--dim); }
