@@ -1,4 +1,6 @@
 // サーバー(GameRoom / Matchmaker)の結合テスト: node scripts/e2e-server.mjs [http://localhost:5199]
+// 本番URLに対して実行すると、テスト用のプレイヤー(名前が E2E_ で始まる)と対局がD1に実際に書き込まれる。
+// 掃除するには: npx wrangler d1 execute hand-chess --remote --command "DELETE FROM games WHERE white_name LIKE 'E2E\_%' ESCAPE '\' OR black_name LIKE 'E2E\_%' ESCAPE '\'; DELETE FROM players WHERE name LIKE 'E2E\_%' ESCAPE '\';"
 const HTTP = process.argv[2] ?? "http://localhost:5199";
 const BASE = HTTP.replace(/^http/, "ws");
 let failed = 0;
@@ -102,7 +104,7 @@ ok(r1?.room && r1.room === r2?.room, "ランダムマッチで2人に同じ部�
 
 // ---------- レート戦(ランダムマッチ + 認証 + Elo + 保存) ----------
 const post = async (path, body) => { const r = await fetch(HTTP + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, ...(await r.json().catch(() => ({}))) }; };
-const uname = (x) => x + Math.random().toString(36).slice(2, 5);
+const uname = (x) => `E2E_${x}${Math.random().toString(36).slice(2, 6)}`;   // 本番で紛れても掃除しやすいよう、目印を付ける
 const pa = await post("/api/register", { name: uname("RA") }), pb = await post("/api/register", { name: uname("RB") });
 ok(pa.status === 201 && pa.id && pa.secret && pa.rating === 1200, "プレイヤー登録でID・秘密のキー・初期レート1200が返る");
 ok((await post("/api/me", { id: pa.id, secret: "wrong" })).status === 401, "秘密のキーが違うと認証できない");

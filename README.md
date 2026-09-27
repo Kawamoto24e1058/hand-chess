@@ -19,6 +19,7 @@ Webカメラの前で親指と人差し指をつまむだけ。インストー�
 - 🤖 **AI対戦**: Stockfish 16 (WASM) がブラウザの中で相手。強さは3段階。
 - 👥 **二人対戦**: 同じPCで交代して指せます。1手指すたびに、次に指す人の陣営が手前に来るよう、盤がなめらかに180°回ります。
 - 🌐 **オンライン対戦**: ランダムマッチ / 部屋コード・招待リンク / 持ち時間(5+3・3+2・10+0・無制限) / 投了・引き分け提案・再戦(先後交代) / 切断からの自動復帰。
+- 🏆 **レーティング・ランキング(ログイン不要)**: ランダムマッチはレート戦(Elo方式、初期1200)。端末にIDと秘密のキーを保存するだけで、メールもパスワードも不要。引き継ぎコードで別端末にも移行可。ランキングとマイページ(戦績・直近の対局)を表示。部屋コード対戦・自作自演はレートに反映しません。
 - 🎯 **手の入力を安定させる工夫**: One Euro Filter、ヒステリシス、遅延補正、検出落ちの猶予、自動キャリブレーション。
 - 🎬 **3Dのタイトル画面**: 巨大なチェスの駒と、駒を「つまんで、運んで、離す」手がリアルタイムに動く背景(three.js。駒はコードで生成、手は骨入りのモデルを関節のIKで動かす)。
 - ♟ **3Dの対局画面**: 影つきの3D盤と駒。掴む・運ぶ・置くが3Dで動き、行ける場所・最後の手・王手を盤に重ねて表示。自分の手にカメラ映像と3Dの手が重なり、つまむと指が閉じます。手のつまむ位置から盤へ落ちる線と真下の点(つまむと締まる)、手の影で、どのマスを指しているかが分かります。3Dが使えない環境では2D表示に自動で切り替わります。
@@ -70,16 +71,23 @@ npm run dev        # http://localhost:5173  (Worker + Durable Objects もロー�
 npm run typecheck                                     # クライアント/Workerの型チェック
 node scripts/e2e-server.mjs http://localhost:5173     # サーバーの結合テスト(dev起動中に実行。本番URLも指定可)
 node scripts/test-calibration.mjs                     # 実位置マッピングの計算の検証(合成データ)
+node scripts/test-elo.mjs                             # レーティング計算の検証
 ```
 
 カメラは `localhost` かHTTPSでのみ使えます。
 
 ## デプロイ (Cloudflare)
 
-Workers Static Assets(静的ファイル) + Durable Objects(部屋・マッチング)で動きます。
+Workers Static Assets(静的ファイル) + Durable Objects(部屋・マッチング) + D1(プレイヤー・レーティング)で動きます。
 
 ```bash
 npx wrangler login   # 初回のみ
+
+# 自分のアカウントでD1データベースを作る(このリポジトリの database_id は作者のものなので、
+# 自分でデプロイする場合は下記で作り直し、wrangler.jsonc の database_id を差し替える)
+npx wrangler d1 create hand-chess
+npx wrangler d1 migrations apply hand-chess --remote
+
 npm run deploy       # ビルド + wrangler deploy
 ```
 
@@ -103,12 +111,15 @@ src/client/   ブラウザ側
   engine.ts     Stockfish (+フォールバック)  filter.ts  One Euro Filter
   scene3d.ts    タイトル画面の3D背景 + 駒・盤・手の部品(three.js、遅延読み込み)
   render3d.ts   対局画面の3D描画 + 3D視点(レイで入力を盤面座標へ)
+  identity.ts   プレイヤーの識別(ID・秘密のキーを端末に保存、引き継ぎコード)
 src/worker/   Cloudflare Worker
   room.ts       対局部屋 (Durable Object)   matchmaker.ts  ランダムマッチ
-src/shared/   通信プロトコルの型
+  players.ts    プレイヤー登録・認証・ランキング(D1)
+src/shared/   通信プロトコルの型、elo.ts(レーティング計算)
+migrations/   D1のスキーマ
 public/       Stockfish、手の3Dモデル(hand/)、(postinstallで)MediaPipeのWASMとモデル
 legacy/       最初の1ファイル版プロトタイプ
-scripts/      アセット準備、サーバー結合テスト
+scripts/      アセット準備、サーバー結合テスト、レーティング/実位置マッピングの計算テスト
 ```
 
 ### 運用・安全
