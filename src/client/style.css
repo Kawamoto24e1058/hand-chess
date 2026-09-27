@@ -196,3 +196,5 @@ canvas#board3d { position: absolute; inset: 0; z-index: 1; width: 100%; height: 
 .diagram.on { opacity: 1; transform: none; }
 @media (min-width: 1000px) { .diagram { position: fixed; right: 20px; bottom: 20px; z-index: 5; } }
 @media (max-width: 999px) { .diagram { align-self: flex-end; margin: -6px 4px 0 0; } }
+
+.lobby-time { font: 700 22px ui-monospace, monospace; color: var(--gold); margin: 4px 0 0; }

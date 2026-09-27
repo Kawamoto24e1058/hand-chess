@@ -43,6 +43,12 @@ export interface Presence {
   b: boolean;
 }
 
+/** 切断されている側が、あと何ms戻らなければ負けになるか(切断されていなければ null) */
+export interface AbandonIn {
+  w: number | null;
+  b: number | null;
+}
+
 export interface Names {
   w: string | null;
   b: string | null;
@@ -65,13 +71,14 @@ export type ServerMsg =
       moves: MoveInput[];
       names: Names;
       present: Presence;
+      abandonIn: AbandonIn;
       clock: ClockState;
       timeControl: TimeControl;
       result: GameResult | null;
       drawOffer: Color | null;
     }
   | { t: "move"; move: MoveInput; san: string; clock: ClockState }
-  | { t: "presence"; present: Presence; names: Names }
+  | { t: "presence"; present: Presence; names: Names; abandonIn: AbandonIn }
   | { t: "gameover"; result: GameResult; clock: ClockState }
   | { t: "draw-offer"; by: Color }
   | { t: "draw-declined" }
@@ -79,7 +86,10 @@ export type ServerMsg =
   | { t: "error"; message: string }
   | { t: "pong" };
 
-export type QueueServerMsg = { t: "waiting" } | { t: "matched"; room: string };
+export type QueueServerMsg = { t: "waiting" } | { t: "matched"; room: string } | { t: "timeout" };
+
+/** ランダムマッチの待ち時間の上限(サーバーが打ち切る) */
+export const QUEUE_TIMEOUT_MS = 90_000;
 
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const ROOM_CODE_LENGTH = 5;

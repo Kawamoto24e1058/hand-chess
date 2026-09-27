@@ -49,6 +49,7 @@ const tokenB = jb.token;
 b.ws.close(); await sleep(300);
 const pres = await a.wait((m) => m.t === "presence" && m.present.b === false);
 ok(!!pres, "相手の切断が通知される");
+ok(pres?.abandonIn.b > 80_000 && pres.abandonIn.b <= 90_000 && pres.abandonIn.w === null, "切断中の側の、あと何ms戻らなければ負けになるかが通知される", `(${pres?.abandonIn.b}ms)`);
 const b2 = client(`${BASE}/ws/room/${code}`); await b2.opened;
 b2.send({ t: "join", name: "Bob", token: tokenB });
 const jb2 = await b2.wait((m) => m.t === "joined"), sync2 = await b2.wait((m) => m.t === "sync");
@@ -63,8 +64,12 @@ ok(go?.result.reason === "agreement" && go.result.winner === null, "合意で引
 
 // 再戦 → 先後交代
 a.send({ t: "rematch" }); b2.send({ t: "rematch" });
-const ja2 = await a.wait((m) => m.t === "joined");
-ok(ja2?.color === "b", "再戦で先後が入れ替わる");
+await sleep(700);
+const lastJoined = (c) => c.inbox.filter((m) => m.t === "joined").pop();
+const ja2 = lastJoined(a), jb3 = lastJoined(b2);
+ok(ja2?.color === "b" && jb3?.color === "w", "再戦で先後が入れ替わる(最終的に、片方が白・もう片方が黒)");
+b2.send({ t: "move", move: { from: "e2", to: "e4" } });
+ok(!!(await a.wait((m) => m.t === "move" && m.san === "e4")), "入れ替え後は、新しい白(元の黒側)が先に指せる");
 
 // フールズメイト → チェックメイト
 const c2 = "T" + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -75,6 +80,17 @@ await sleep(200);
 for (const [who, from, to] of [[p, "f2", "f3"], [q, "e7", "e5"], [p, "g2", "g4"], [q, "d8", "h4"]]) { who.send({ t: "move", move: { from, to } }); await sleep(400); }
 const mate = await p.wait((m) => m.t === "gameover");
 ok(mate?.result.reason === "checkmate" && mate.result.winner === "b", "チェックメイトを検出して勝敗を配信");
+
+// 連投制限: 短時間に大量のメッセージを送ると、接続が切られる
+{
+  const cf = "T" + Math.random().toString(36).slice(2, 6).toUpperCase();
+  const flood = client(`${BASE}/ws/room/${cf}`); await flood.opened;
+  let closedCode = null; flood.ws.onclose = (e) => { closedCode = e.code; };
+  flood.send({ t: "join", name: "Flood" });
+  for (let i = 0; i < 80; i++) flood.send({ t: "ping" });
+  await sleep(800);
+  ok(closedCode === 1008, "メッセージを連投すると、接続が切られる", `(code ${closedCode})`);
+}
 
 // ランダムマッチ
 const m1 = client(`${BASE}/ws/queue`), m2 = client(`${BASE}/ws/queue`);

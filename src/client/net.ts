@@ -80,6 +80,7 @@ export function findMatch(onWaiting: () => void): { promise: Promise<string>; ca
       const m = JSON.parse(e.data as string) as QueueServerMsg;
       if (m.t === "waiting") onWaiting();
       else if (m.t === "matched") { done = true; resolve(m.room); }
+      else if (m.t === "timeout") { done = true; reject(new Error("timeout")); }
     };
     ws.onerror = () => reject(new Error("マッチングサーバーに接続できません"));
     ws.onclose = () => { if (!done) reject(new Error("cancelled")); };

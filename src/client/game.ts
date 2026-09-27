@@ -1,5 +1,5 @@
 import { Chess } from "chess.js";
-import type { ClockState, Color, GameResult, MoveInput, Names, Presence, ServerMsg, TimeControl } from "../shared/protocol";
+import type { AbandonIn, ClockState, Color, GameResult, MoveInput, Names, Presence, ServerMsg, TimeControl } from "../shared/protocol";
 import { sfx } from "./audio";
 import { Engine } from "./engine";
 import type { HandInput, PinchEndReason, Pos } from "./hand";
@@ -40,6 +40,9 @@ export class Game {
   thinking = false;
   lastMove: { from: string; to: string } | null = null;
   anim: Anim | null = null;
+  anim2: Anim | null = null;           // キャスリングのルーク(王と同時に動く)
+  /** ポーンの昇格の選択待ち(選ぶまで指し手は確定しない) */
+  promo: { from: string; to: string; color: Color } | null = null;
   particles: Particle[] = [];
   shake = 0;
   moveList: string[] = [];
@@ -57,6 +60,7 @@ export class Game {
   onToast?: (msg: string, ms?: number) => void;
   onDrawOffer?: () => void;
 
+  private abandon: { v: AbandonIn; at: number } = { v: { w: null, b: null }, at: 0 };   // 切断中の側が、あと何msで負けになるか(受信時点)
   private clockBase = { w: 0, b: 0, turn: "w" as Color, running: false, at: 0 };
   private net: RoomConnection | null = null;
   private serverCount = 0;
@@ -107,11 +111,26 @@ export class Game {
   }
 
   private resetBoard() {
-    this.chess = new Chess(); this.moveList = []; this.lastMove = null; this.anim = null; this.particles = [];
+    this.chess = new Chess(); this.moveList = []; this.lastMove = null; this.anim = null; this.anim2 = null; this.promo = null; this.particles = [];
     this.held = null; this.input.holding = false; this.thinking = false;
     this.result = null; this.drawOffer = null; this.rematchOffer = null; this.serverCount = 0;
     this.turnLockUntil = 0; if (this.mode.kind === "local") this.flip = false;
   }
+
+  // ---------- ポーンの昇格 ----------
+  /** 選択カードの位置(画面座標)。左から クイーン・ルーク・ビショップ・ナイト */
+  promoCards(): { piece: "q" | "r" | "b" | "n"; x: number; y: number; w: number; h: number }[] {
+    const w = 120, h = 150, gap = 16, x0 = S / 2 - (4 * w + 3 * gap) / 2, y = S / 2 - h / 2;
+    return (["q", "r", "b", "n"] as const).map((piece, i) => ({ piece, x: x0 + i * (w + gap), y, w, h }));
+  }
+
+  choosePromotion(piece: "q" | "r" | "b" | "n") {
+    const pr = this.promo;
+    if (!pr) return;
+    this.promo = null;
+    void this.commitMove({ from: pr.from, to: pr.to, promotion: piece }, this.cursor ?? undefined);
+  }
+  cancelPromotion() { this.promo = null; }
 
   // ---------- 実位置マッピングのキャリブレーション ----------
   /** 示してもらう場所(盤面座標): 手前左 → 手前右 → 奥右 → 奥左 → 中央 */
@@ -196,6 +215,11 @@ export class Game {
   }
 
   private onPinchStart(past: Pos, now: Pos) {
+    if (this.promo) {                                                     // 昇格の選択中: 指した(つまんだ)カードを選ぶ。外側なら取り消し
+      const hit = this.promoCards().find((c) => past.x >= c.x && past.x <= c.x + c.w && past.y >= c.y && past.y <= c.y + c.h);
+      if (hit) this.choosePromotion(hit.piece); else this.cancelPromotion();
+      return;
+    }
     if (this.cal) { this.captureCal(past); return; }                       // キャリブレーション中は、駒を掴まずに位置を記録する
     const sq = this.pickSquare(this.cursorAt(past, past.r, past.p3)) ?? this.pickSquare(this.cursorAt(now, now.r, now.p3));
     if (sq && this.tryGrab(sq)) {
@@ -251,7 +275,7 @@ export class Game {
 
   canMoveNow(color: Color): boolean {
     if (performance.now() < this.turnLockUntil) return false;
-    if (this.cal) return false;
+    if (this.cal || this.promo) return false;
     if (this.thinking || this.result || this.chess.turn() !== color || this.anim?.own) return false;
     switch (this.mode.kind) {
       case "ai": return color === "w";
@@ -278,9 +302,14 @@ export class Game {
     const h = this.held;
     this.held = null; this.input.holding = false;
     if (!h || !sq || !h.targets.has(sq)) return;
-    const mv: MoveInput = { from: h.from, to: sq, promotion: "q" };   // 昇格はクイーン固定
-    const from = this.cursor ?? undefined;
-    if (!this.applyMove(mv, from)) return;
+    // ポーンが最終段に着く手は、駒を選んでもらう(選ぶまで確定しない)
+    if (h.type === "p" && (sq[1] === "8" || sq[1] === "1")) { this.promo = { from: h.from, to: sq, color: h.color }; return; }
+    await this.commitMove({ from: h.from, to: sq }, this.cursor ?? undefined);
+  }
+
+  /** 指し手を確定する(オンラインなら送信、AI戦なら返事を待つ) */
+  private async commitMove(mv: MoveInput, dropFrom?: Pt) {
+    if (!this.applyMove(mv, dropFrom)) return;
     if (this.mode.kind === "online") { this.net?.send({ t: "move", move: mv }); return; }
     if (this.checkLocalEnd()) return;
     if (this.mode.kind === "ai") await this.aiReply();
@@ -311,6 +340,14 @@ export class Game {
       x0: dropFrom?.x ?? a.x, y0: dropFrom?.y ?? a.y, x1: b.x, y1: b.y,
       fx: { captured: !!m.captured, capturedColor: other(m.color), san: m.san },
     };
+    // キャスリング: 王と同時に、ルークも動かす
+    this.anim2 = null;
+    if (m.flags.includes("k") || m.flags.includes("q")) {
+      const rank = m.from[1], k = m.flags.includes("k");
+      const rf = (k ? "h" : "a") + rank, rt = (k ? "f" : "d") + rank;
+      const ra = this.sqCenter(rf), rb = this.sqCenter(rt);
+      this.anim2 = { to: rt, glyph: glyphOf("r"), type: "r", color: m.color, own: false, t0: performance.now(), dur: 380, x0: ra.x, y0: ra.y, x1: rb.x, y1: rb.y, fx: { captured: false, capturedColor: other(m.color), san: "" } };
+    }
     return true;
   }
 
@@ -318,7 +355,7 @@ export class Game {
   landFx(a: Anim) {
     if (a.fx.captured) { sfx.capture(); this.burst(a.to, a.fx.capturedColor); } else sfx.place();
     if (a.fx.san.endsWith("+")) sfx.check();
-    if (this.anim === a) this.anim = null;
+    if (this.anim === a) { this.anim = null; this.anim2 = null; }
     // 二人対戦: 次に指す人の陣営が手前に来るように、盤を回す(描画側がなめらかに回す)
     if (this.mode.kind === "local" && !this.result) {
       const f = this.chess.turn() === "b";
@@ -384,6 +421,7 @@ export class Game {
       case "sync": {
         this.rebuild(m.moves);
         this.names = m.names; this.present = m.present; this.timeControl = m.timeControl;
+        this.abandon = { v: m.abandonIn, at: performance.now() };
         this.setClock(m.clock); this.drawOffer = m.drawOffer; this.rematchOffer = null;
         const finished = m.result && !this.result;
         this.result = m.result;
@@ -400,7 +438,7 @@ export class Game {
         this.drawOffer = null;
         break;
       }
-      case "presence": this.present = m.present; this.names = m.names; break;
+      case "presence": this.present = m.present; this.names = m.names; this.abandon = { v: m.abandonIn, at: performance.now() }; break;
       case "gameover": this.setClock(m.clock); this.setResult(m.result); break;
       case "draw-offer": if (m.by !== this.myColor) { this.drawOffer = m.by; sfx.notify(); this.onDrawOffer?.(); } break;
       case "draw-declined": this.drawOffer = null; this.onToast?.("引き分けの提案は断られました"); break;
@@ -437,6 +475,24 @@ export class Game {
     return { w: Math.max(0, w - (turn === "w" ? d : 0)), b: Math.max(0, b - (turn === "b" ? d : 0)), turn, running };
   }
 
+  /** 相手が切断中なら、あと何秒戻らなければ勝ちになるか(表示用)。切断中でなければ null */
+  opponentAbandonSeconds(): number | null {
+    if (!this.myColor) return null;
+    const ms = this.abandon.v[other(this.myColor)];
+    return ms === null ? null : Math.max(0, Math.ceil((ms - (performance.now() - this.abandon.at)) / 1000));
+  }
+
+  /** 棋譜(PGN)。名前・日付・結果つき */
+  pgn(): string {
+    const c = new Chess();
+    c.setHeader("Event", "Hand Chess"); c.setHeader("Site", "https://hand-chess.momotech.workers.dev");
+    c.setHeader("Date", new Date().toISOString().slice(0, 10).replaceAll("-", "."));
+    c.setHeader("White", this.names.w ?? "White"); c.setHeader("Black", this.names.b ?? "Black");
+    c.setHeader("Result", !this.result ? "*" : this.result.winner === "w" ? "1-0" : this.result.winner === "b" ? "0-1" : "1/2-1/2");
+    for (const san of this.moveList) { try { c.move(san); } catch { break; } }
+    return c.pgn();
+  }
+
   /** 盤面に出す1行の状態 */
   statusText(): string {
     if (this.mode.kind === "online") {
@@ -444,10 +500,14 @@ export class Game {
       if (this.netStatus === "reconnecting") return "接続が切れました。再接続しています…";
       if (this.netStatus === "closed") return "切断されました(別の場所で開いた可能性があります)";
       if (!this.present.w || !this.present.b) {
-        if (!this.result && this.moveList.length > 0) return "相手が切断しました。戻るのを待っています…";
+        if (!this.result && this.moveList.length > 0) {
+          const sec = this.opponentAbandonSeconds();
+          return sec === null ? "相手が切断しました。戻るのを待っています…" : `相手が切断しました。あと${sec}秒で、あなたの勝ちになります`;
+        }
         return this.names.w && this.names.b ? "相手が切断しています" : "相手の参加を待っています…";
       }
     }
+    if (this.promo) return "昇格する駒を選んでください";
     if (this.result) return "";
     if (this.thinking) return "AIが考えています…";
     const check = this.chess.inCheck() ? " — チェック!" : "";

@@ -133,6 +133,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
 
   drawCursorHelp(ctx, g);
   drawBoardCal(ctx, g);
+  drawPromotion(ctx, g);
 
   // 終局バナー
   if (g.result && !g.anim) {
@@ -265,6 +266,28 @@ function drawBoardCal(ctx: CanvasRenderingContext2D, g: Game) {
   ctx.fillText(`光っている位置に手を持っていき、つまんでください (${cal.step + 1}/5)`, S / 2, S - 40);
   ctx.fillStyle = "#9aa5bd"; ctx.font = "13px sans-serif";
   ctx.fillText("手前左 → 手前右 → 奥右 → 奥左 → 中央 の順です。やめるには Esc", S / 2, S - 16);
+}
+
+
+/** ポーンの昇格: 4枚のカードから、つまんで(クリックして)選ぶ。カードの外をつまむと取り消し */
+function drawPromotion(ctx: CanvasRenderingContext2D, g: Game) {
+  const pr = g.promo;
+  if (!pr) return;
+  ctx.fillStyle = "rgba(6,8,14,.72)"; ctx.fillRect(0, 0, S, S);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#e8ecf5"; ctx.font = "bold 24px sans-serif";
+  ctx.fillText("昇格する駒を選んでください", S / 2, S / 2 - 118);
+  const sc = g.input.screen;
+  for (const c of g.promoCards()) {
+    const hot = sc.x >= c.x && sc.x <= c.x + c.w && sc.y >= c.y && sc.y <= c.y + c.h;
+    ctx.fillStyle = hot ? "rgba(102,204,255,.28)" : "rgba(26,34,50,.95)";
+    ctx.strokeStyle = hot ? "#6cf" : "rgba(140,160,210,.5)"; ctx.lineWidth = hot ? 4 : 2;
+    roundRect(ctx, c.x, c.y, c.w, c.h, 16); ctx.fill(); ctx.stroke();
+    ctx.font = "84px serif"; ctx.lineJoin = "round";
+    ctx.lineWidth = 6; ctx.strokeStyle = pr.color === "w" ? "#1b1b1b" : "#e6ecff"; ctx.strokeText(glyphOf(c.piece), c.x + c.w / 2, c.y + c.h / 2);
+    ctx.fillStyle = pr.color === "w" ? "#fff6dc" : "#1c2a66"; ctx.fillText(glyphOf(c.piece), c.x + c.w / 2, c.y + c.h / 2);
+  }
+  ctx.fillStyle = "#9aa5bd"; ctx.font = "14px sans-serif";
+  ctx.fillText("Q・R・B・N キーでも選べます / 外をつまむと取り消し", S / 2, S / 2 + 112);
 }
 
 /** LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄) */

@@ -198,21 +198,37 @@ export class App {
     $("joinCode").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") join($<HTMLInputElement>("joinCode").value); });
     $("joinInvite").onclick = () => join($("inviteCode").textContent ?? "");
 
-    $("startRandom").onclick = async () => {
+    const search = async () => {
       this.show("lobby");
-      const m = findMatch(() => { $("lobbyTitle").textContent = "対戦相手を探しています…"; });
-      this.cancelMatch = m.cancel;
+      const t0 = Date.now();
+      $("lobbyTitle").textContent = "対戦相手を探しています…";
+      $("lobbyNote").textContent = "別の人が来るとすぐに始まります。";
+      $("lobbyAI").hidden = true; $("lobbyRetry").hidden = true; $("cancelMatch").hidden = false;
+      const tick = window.setInterval(() => {
+        const sec = Math.floor((Date.now() - t0) / 1000);
+        $("lobbyElapsed").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+        if (sec >= 30) { $("lobbyNote").textContent = "なかなか相手が来ません。AIと対戦して待つこともできます。"; $("lobbyAI").hidden = false; }
+      }, 500);
+      $("lobbyElapsed").textContent = "0:00";
+      const m = findMatch(() => { /* 待機中 */ });
+      this.cancelMatch = () => { window.clearInterval(tick); m.cancel(); };
       try {
         const room = await m.promise;
-        this.cancelMatch = null;
+        window.clearInterval(tick); this.cancelMatch = null;
         history.replaceState(null, "", `?room=${room}`);
         this.startGame({ kind: "online", room, tc: "5+3" });
       } catch (e) {
-        this.cancelMatch = null;
-        this.toast((e as Error).message);
-        this.show("start");
+        window.clearInterval(tick); this.cancelMatch = null;
+        if ((e as Error).message === "timeout") {          // 待ち時間の上限: 選択肢を出す
+          $("lobbyTitle").textContent = "相手が見つかりませんでした";
+          $("lobbyNote").textContent = "もう一度探すか、AIと対戦できます。";
+          $("lobbyAI").hidden = false; $("lobbyRetry").hidden = false; $("cancelMatch").hidden = true;
+        } else { this.toast((e as Error).message); this.show("start"); }
       }
     };
+    $("startRandom").onclick = search;
+    $("lobbyRetry").onclick = search;
+    $("lobbyAI").onclick = () => { this.cancelMatch?.(); this.cancelMatch = null; this.startGame({ kind: "ai", skill: +$<HTMLSelectElement>("aiLevel").value }); };
     $("cancelMatch").onclick = () => { this.cancelMatch?.(); this.cancelMatch = null; this.show("start"); };
   }
 
@@ -246,6 +262,7 @@ export class App {
       if (this.input.cameraState === "off") { this.camErrorDismissed = false; void this.input.startCamera(); } else this.input.stopCamera();
     };
     $("toolCalib").onclick = () => this.calibrate();
+    $("toolPgn").onclick = () => this.copyPgn();
     const SENSE: [string, number][] = [["低", 0.6], ["標準", 1], ["高", 1.6]];
     const setSense = (i: number) => { this.senseIdx = i; this.game.depthSense = SENSE[i][1]; store.set("senseIdx", i); setText($("toolDepthSense"), `奥行きの感度: ${SENSE[i][0]}`); };
     $("toolDepthSense").onclick = () => setSense((this.senseIdx + 1) % SENSE.length);
@@ -273,6 +290,12 @@ export class App {
     $("calibLater").onclick = () => { this.calibDismissed = true; };
   }
 
+  private async copyPgn() {
+    const pgn = this.game.pgn();
+    try { await navigator.clipboard.writeText(pgn); this.toast("棋譜(PGN)をコピーしました"); }
+    catch { this.toast("コピーできませんでした。開発者ツールのコンソールに出力しました", 4000); console.log(pgn); }
+  }
+
   private calibrate() {
     this.calibDismissed = true;
     const err = this.input.startCalib();
@@ -282,6 +305,11 @@ export class App {
   private wireKeys() {
     addEventListener("keydown", (e) => {
       if (this.screen !== "game" || (e.target as HTMLElement).tagName === "INPUT" || e.metaKey || e.ctrlKey) return;
+      if (this.game.promo) {                                              // 昇格の選択中は、Q/R/B/N で選ぶ。Escで取り消し
+        const k = e.key.toLowerCase();
+        if (k === "q" || k === "r" || k === "b" || k === "n") { this.game.choosePromotion(k); return; }
+        if (e.key === "Escape") { this.game.cancelPromotion(); return; }
+      }
       if (e.key === "Escape" && this.game.cal) { this.game.cancelBoardCal(); this.toast("位置合わせをやめました", 2000); return; }
       const k = e.key.toLowerCase();
       if (k === "d") this.debug = !this.debug;
@@ -295,6 +323,7 @@ export class App {
   private wireModal() {
     $("modalRematch").onclick = () => { this.game.rematch(); $("modal").hidden = true; };
     $("modalHome").onclick = () => this.goHome();
+    $("modalPgn").onclick = () => this.copyPgn();
     $("modalClose").onclick = () => { $("modal").hidden = true; };
   }
 

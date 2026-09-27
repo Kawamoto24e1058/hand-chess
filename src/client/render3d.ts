@@ -73,6 +73,7 @@ export class GameRenderer {
   private pool = new Map<string, THREE.Group[]>();
   private statics = new Map<string, Stat>();             // マス → 静止している駒
   private moving: Stat | null = null;                    // 移動アニメーション中の駒
+  private moving2: Stat | null = null;                   // キャスリングのルーク
   private heldObj: Stat | null = null;                   // 掴まれている駒
   private lastMarks: THREE.Mesh[] = [];
   private targetMarks: THREE.Mesh[] = [];               // 行き先の点
@@ -226,7 +227,7 @@ export class GameRenderer {
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
       const p = board[r][c]; if (!p) continue;
       const sq = sqName(c, r);
-      if (g.held?.from === sq || g.anim?.to === sq) continue;
+      if (g.held?.from === sq || g.anim?.to === sq || g.anim2?.to === sq) continue;
       want.set(sq, { type: p.type, color: p.color });
     }
     for (const [sq, st] of [...this.statics]) {
@@ -254,6 +255,14 @@ export class GameRenderer {
       this.moving.group.position.set(toWorldX(x), h, toWorldZ(y));
       if (p >= 1) g.landFx(a);
     } else if (this.moving) { this.release(this.moving); this.moving = null; }
+
+    // キャスリングのルーク(王と同時に、弧を描いて動く)
+    const a2 = g.anim2;
+    if (a2 && a) {
+      if (!this.moving2) this.moving2 = this.acquire(a2.type, a2.color, bottom);
+      const p = Math.min(1, (now - a2.t0) / a2.dur), e = 1 - Math.pow(1 - p, 3);
+      this.moving2.group.position.set(toWorldX(a2.x0 + (a2.x1 - a2.x0) * e), Math.sin(Math.PI * p) * 0.7, toWorldZ(a2.y0 + (a2.y1 - a2.y0) * e));
+    } else if (this.moving2) { this.release(this.moving2); this.moving2 = null; }
 
     // 掴んでいる駒(手に付いて持ち上がり、青く光る)
     const cur = g.cursor;

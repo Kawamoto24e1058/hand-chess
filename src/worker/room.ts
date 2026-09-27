@@ -4,12 +4,14 @@ import type { Env } from "./index";
 import {
   DEFAULT_TC_KEY, TIME_CONTROLS,
   type ClientMsg, type ClockState, type Color, type GameResult, type MoveInput,
-  type Names, type Presence, type ResultReason, type ServerMsg, type TimeControl,
+  type AbandonIn, type Names, type Presence, type ResultReason, type ServerMsg, type TimeControl,
 } from "../shared/protocol";
 
 const ABANDON_MS = 90_000;        // 切断されたまま戻らなければ負け
 const IDLE_CLEANUP_MS = 10 * 60_000;   // 誰もいない部屋は10分で破棄
 const MAX_MESSAGE_BYTES = 2048;
+const MAX_SPECTATORS = 20;              // 観戦者の上限
+const RATE_BURST = 20, RATE_PER_SEC = 8;   // 1接続あたりのメッセージ数の制限(連投で部屋を重くされないように)
 
 interface Persisted {
   moves: MoveInput[];
@@ -56,6 +58,7 @@ function freshState(tc: TimeControl): Persisted {
 export class GameRoom extends DurableObject<Env> {
   private s: Persisted = freshState(TIME_CONTROLS[DEFAULT_TC_KEY]);
   private chess = new Chess();
+  private buckets = new WeakMap<WebSocket, { tokens: number; at: number }>();   // メモリ上のトークンバケット(休止で消えても問題ない)
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -83,6 +86,7 @@ export class GameRoom extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     if (typeof raw !== "string" || raw.length > MAX_MESSAGE_BYTES) return;
+    if (!this.allow(ws)) { try { ws.close(1008, "メッセージが多すぎます"); } catch { /* */ } return; }
     let msg: ClientMsg;
     try { msg = JSON.parse(raw); } catch { return; }
     try {
@@ -90,6 +94,17 @@ export class GameRoom extends DurableObject<Env> {
     } catch (e) {
       this.send(ws, { t: "error", message: e instanceof Error ? e.message : "エラーが発生しました" });
     }
+  }
+
+  /** トークンバケット: 最大 RATE_BURST 通まで一気に、その後は毎秒 RATE_PER_SEC 通まで */
+  private allow(ws: WebSocket): boolean {
+    const now = Date.now();
+    const b = this.buckets.get(ws) ?? { tokens: RATE_BURST, at: now };
+    b.tokens = Math.min(RATE_BURST, b.tokens + ((now - b.at) / 1000) * RATE_PER_SEC); b.at = now;
+    this.buckets.set(ws, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> { await this.onDisconnect(ws); }
@@ -100,7 +115,7 @@ export class GameRoom extends DurableObject<Env> {
     if (color && !this.socketsOf(color).some((w) => w !== ws)) {
       this.s.disconnectedAt[color] = Date.now();
       await this.save();
-      this.broadcast({ t: "presence", present: this.presence(ws), names: this.s.names });
+      this.broadcast({ t: "presence", present: this.presence(ws), names: this.s.names, abandonIn: this.abandonIn() });
     }
     this.s.lastActive = Date.now();
     await this.scheduleAlarm();
@@ -156,13 +171,18 @@ export class GameRoom extends DurableObject<Env> {
         if (old !== ws) { try { old.close(4000, "別の場所から接続されました"); } catch { /* */ } }
       }
     }
+    if (!color && this.ctx.getWebSockets().filter((w) => (w.deserializeAttachment() as Attachment | null)?.color == null).length > MAX_SPECTATORS) {
+      this.send(ws, { t: "error", message: "観戦者が上限に達しています" });
+      try { ws.close(1013, "満員"); } catch { /* */ }
+      return;
+    }
     ws.serializeAttachment({ color } satisfies Attachment);
     s.lastActive = Date.now();
     await this.save();
 
     this.send(ws, { t: "joined", color, token: myToken, room: this.roomName() });
     this.send(ws, this.syncMsg());
-    this.broadcast({ t: "presence", present: this.presence(), names: s.names }, ws);
+    this.broadcast({ t: "presence", present: this.presence(), names: s.names, abandonIn: this.abandonIn() }, ws);
     await this.scheduleAlarm();
   }
 
@@ -241,12 +261,13 @@ export class GameRoom extends DurableObject<Env> {
     this.s = swapped;
     this.chess = new Chess();
     await this.save();
-    for (const c of ["w", "b"] as const) {
-      for (const sock of this.socketsOf(c)) {
-        const newColor = other(c);
-        sock.serializeAttachment({ color: newColor } satisfies Attachment);
-        this.send(sock, { t: "joined", color: newColor, token: this.s.tokens[newColor] ?? "", room: this.roomName() });
-      }
+    // 入れ替え前の席を先に控えてから、まとめて入れ替える(順に入れ替えると、同じ接続を2回入れ替えてしまう)
+    const before = this.ctx.getWebSockets().map((ws) => ({ ws, c: (ws.deserializeAttachment() as Attachment | null)?.color ?? null }));
+    for (const { ws, c } of before) {
+      if (!c) continue;
+      const newColor = other(c);
+      ws.serializeAttachment({ color: newColor } satisfies Attachment);
+      this.send(ws, { t: "joined", color: newColor, token: this.s.tokens[newColor] ?? "", room: this.roomName() });
     }
     this.broadcast(this.syncMsg());
     await this.scheduleAlarm();
@@ -308,6 +329,13 @@ export class GameRoom extends DurableObject<Env> {
     return { w: live("w"), b: live("b") };
   }
 
+  /** 切断中の側が、あと何msで負けになるか。対局中(1手以上・未終了)だけ */
+  private abandonIn(): AbandonIn {
+    const s = this.s, now = Date.now();
+    const f = (c: Color) => (s.disconnectedAt[c] !== null && s.moves.length > 0 && !s.result ? Math.max(0, ABANDON_MS - (now - s.disconnectedAt[c]!)) : null);
+    return { w: f("w"), b: f("b") };
+  }
+
   private clock(): ClockState {
     const s = this.s;
     const turn = this.chess.turn();
@@ -323,6 +351,7 @@ export class GameRoom extends DurableObject<Env> {
       moves: this.s.moves,
       names: this.s.names,
       present: this.presence(),
+      abandonIn: this.abandonIn(),
       clock: this.clock(),
       timeControl: this.s.tc,
       result: this.s.result,

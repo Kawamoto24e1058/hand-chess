@@ -125,8 +125,13 @@
   <section id="screen-lobby" class="screen center" hidden>
     <div class="spinner"></div>
     <h2 id="lobbyTitle">対戦相手を探しています…</h2>
-    <p class="note">別の人が来るとすぐに始まります。</p>
-    <button id="cancelMatch">キャンセル</button>
+    <p class="lobby-time" id="lobbyElapsed">0:00</p>
+    <p class="note" id="lobbyNote">別の人が来るとすぐに始まります。</p>
+    <div class="row" style="justify-content:center">
+      <button id="lobbyAI" class="primary" hidden>AIと対戦する</button>
+      <button id="lobbyRetry" hidden>もう一度探す</button>
+      <button id="cancelMatch">キャンセル</button>
+    </div>
   </section>
 
   <!-- ===== 対局画面 ===== -->
@@ -190,6 +195,7 @@
           <button id="toolMap">実位置(実験): 未設定</button>
           <button id="toolDepth">奥行き操作(実験): OFF</button>
           <button id="toolDepthSense">奥行きの感度: 標準</button>
+          <button id="toolPgn">棋譜をコピー</button>
           <button id="toolFilter">フィルタ: ON (F)</button>
           <button id="toolExplain">解説表示 (E)</button>
         </div>
@@ -208,6 +214,7 @@
       <div class="row">
         <button id="modalRematch" class="primary">再戦</button>
         <button id="modalHome">ホームへ</button>
+        <button id="modalPgn">棋譜をコピー</button>
         <button id="modalClose">盤を見る</button>
       </div>
     </div>

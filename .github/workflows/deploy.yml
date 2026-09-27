@@ -19,10 +19,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci          # postinstall で MediaPipe の WASM / モデルを public/ に用意する
       - run: npm run typecheck
+      - run: node scripts/test-calibration.mjs   # 実位置マッピングの計算の検証(合成データ)
       - name: Deploy
         if: env.CLOUDFLARE_API_TOKEN != ''
         run: npm run deploy
