@@ -32,6 +32,7 @@ export class App {
   private diagram = $<HTMLCanvasElement>("moveDiagram");
   private diagramCtx = this.diagram.getContext("2d")!;
   private explain = false;
+  private senseIdx = store.get("senseIdx", 1);         // 奥行きの感度(0:低 1:標準 2:高)
   private hints = store.get("hints", true);         // 動かせる駒の印
   private debug = false;
   private cancelMatch: (() => void) | null = null;
@@ -245,6 +246,10 @@ export class App {
       if (this.input.cameraState === "off") { this.camErrorDismissed = false; void this.input.startCamera(); } else this.input.stopCamera();
     };
     $("toolCalib").onclick = () => this.calibrate();
+    const SENSE: [string, number][] = [["低", 0.6], ["標準", 1], ["高", 1.6]];
+    const setSense = (i: number) => { this.senseIdx = i; this.game.depthSense = SENSE[i][1]; store.set("senseIdx", i); setText($("toolDepthSense"), `奥行きの感度: ${SENSE[i][0]}`); };
+    $("toolDepthSense").onclick = () => setSense((this.senseIdx + 1) % SENSE.length);
+    setSense(this.senseIdx);
     $("toolDepth").onclick = () => { this.game.depthMode = !this.game.depthMode; store.set("depth", this.game.depthMode); };
     $("toolRelock").onclick = () => { this.input.releaseLock(); this.toast("いちばん近くの手を追従し直します", 2200); };
     $("toolHints").onclick = () => { this.hints = !this.hints; store.set("hints", this.hints); };

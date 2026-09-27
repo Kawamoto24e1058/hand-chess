@@ -21,7 +21,8 @@ export interface Anim {
 export interface Particle { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number; color: string }
 
 const other = (c: Color): Color => (c === "w" ? "b" : "w");
-const PUSH_GAIN = 1400;        // 手の大きさが100%変わった時に進む盤面の距離(px)。25%近づけると約4マス奥へ
+const PUSH_GAIN = 800;         // 手の大きさが100%変わった時に進む盤面の距離(px)。標準感度で、25%近づけると約2マス奥へ
+const PUSH_DEADZONE = 0.02;    // 手の大きさの2%以内の揺れは無視(検出のぶれで駒が動かないように)
 const PUSH_Y_BLEND = 0.3;      // 手の上下の動きを、奥行きの動きにどれだけ足すか
 
 /**
@@ -61,6 +62,7 @@ export class Game {
   private engine = new Engine();
   /** 奥行き操作: 掴んだあと、手を前に突き出すと駒が盤の奥へ進む(手の大きさの変化から推定) */
   depthMode = true;
+  depthSense = 1;                                                        // 奥行きの感度(倍率): 低 0.6 / 標準 1 / 高 1.6
   private push: { origin: Pt; hb0: Pt; r0: number } | null = null;       // 掴んだ瞬間の、駒の元の位置・手の位置・手の大きさ
   private turnLockUntil = 0;             // 盤を回している間は、駒を掴めないようにする
   private token = 0;                   // AI思考中に画面を離れた時、古い応答を捨てるため
@@ -116,10 +118,11 @@ export class Game {
   cursorAt(s: Pt, r: number): Pt {
     const hb = this.board(s), pb = this.push;
     if (!this.held || !pb || !this.depthMode || !(r > 0) || !(pb.r0 > 0)) return hb;
-    const dz = Math.max(-0.6, Math.min(0.6, (r - pb.r0) / pb.r0));            // 手が大きくなった割合(近づいた=前に突き出した)
+    let dz = Math.max(-0.8, Math.min(0.8, (r - pb.r0) / pb.r0));              // 手が大きくなった割合(近づいた=前に突き出した)
+    dz = Math.sign(dz) * Math.max(0, Math.abs(dz) - PUSH_DEADZONE);           // 小さな揺れは無視
     return {
       x: Math.min(S, Math.max(0, pb.origin.x + (hb.x - pb.hb0.x))),
-      y: Math.min(S, Math.max(0, pb.origin.y + PUSH_Y_BLEND * (hb.y - pb.hb0.y) - PUSH_GAIN * dz)),   // 前に突き出す = 盤の奥(上)
+      y: Math.min(S, Math.max(0, pb.origin.y + PUSH_Y_BLEND * (hb.y - pb.hb0.y) - PUSH_GAIN * this.depthSense * dz)),   // 前に突き出す = 盤の奥(上)
     };
   }
 
