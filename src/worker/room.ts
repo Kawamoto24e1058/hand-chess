@@ -1,10 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { Chess } from "chess.js";
 import type { Env } from "./index";
+import { authenticate } from "./players";
+import { MIN_PLIES_FOR_RATING, updateElo } from "../shared/elo";
 import {
   DEFAULT_TC_KEY, TIME_CONTROLS,
   type ClientMsg, type ClockState, type Color, type GameResult, type MoveInput,
-  type AbandonIn, type Names, type Presence, type ResultReason, type ServerMsg, type TimeControl,
+  type AbandonIn, type RatingChanges, type Names, type Presence, type ResultReason, type ServerMsg, type TimeControl,
 } from "../shared/protocol";
 
 const ABANDON_MS = 90_000;        // 切断されたまま戻らなければ負け
@@ -27,6 +29,11 @@ interface Persisted {
   rematch: { w: boolean; b: boolean };
   disconnectedAt: { w: number | null; b: number | null };
   lastActive: number;
+  // ---- レート戦(ランダムマッチで作られた部屋だけ。クライアントの申告では立てられない) ----
+  rated: boolean;
+  playerIds: { w: string | null; b: string | null };          // 認証できたプレイヤーのID
+  ratings: { w: number | null; b: number | null };            // 対局前(=直近)の各自のレーティング
+  ratingChanges: RatingChanges | null;                        // 終局後、反映した結果
 }
 
 interface Attachment {
@@ -48,6 +55,7 @@ function freshState(tc: TimeControl): Persisted {
     rematch: { w: false, b: false },
     disconnectedAt: { w: null, b: null },
     lastActive: Date.now(),
+    rated: false, playerIds: { w: null, b: null }, ratings: { w: null, b: null }, ratingChanges: null,
   };
 }
 
@@ -69,6 +77,14 @@ export class GameRoom extends DurableObject<Env> {
         for (const m of this.s.moves) this.chess.move(m);
       }
     });
+  }
+
+  /** ランダムマッチのサーバー(Matchmaker)だけが呼ぶ。この部屋をレート戦(5分+3秒)にする */
+  async markRated(): Promise<void> {
+    if (this.s.moves.length > 0 || this.s.tokens.w || this.s.tokens.b) return;
+    const tc = TIME_CONTROLS[DEFAULT_TC_KEY];
+    this.s = { ...freshState(tc), tcLocked: true, rated: true };
+    await this.save();
   }
 
   // ---------- 接続 ----------
@@ -127,7 +143,7 @@ export class GameRoom extends DurableObject<Env> {
 
     switch (msg.t) {
       case "ping": return this.send(ws, { t: "pong" });
-      case "join": return this.join(ws, msg.name, msg.token);
+      case "join": return this.join(ws, msg.name, msg.token, msg.auth);
     }
     if (!color) throw new Error("観戦中は操作できません");
 
@@ -155,7 +171,7 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private async join(ws: WebSocket, name: string, token?: string) {
+  private async join(ws: WebSocket, name: string, token?: string, auth?: { id: string; secret: string }) {
     const s = this.s;
     let color: Color | null = null;
     if (token) for (const c of ["w", "b"] as const) if (s.tokens[c] === token) color = c;
@@ -163,10 +179,18 @@ export class GameRoom extends DurableObject<Env> {
 
     let myToken = token ?? "";
     if (color) {
-      if (s.tokens[color] !== token) myToken = crypto.randomUUID();
+      const newSeat = s.tokens[color] !== token;
+      if (newSeat) myToken = crypto.randomUUID();
       s.tokens[color] = myToken;
       s.names[color] = cleanName(name);
       s.disconnectedAt[color] = null;
+      // レート戦: 新しく座る時だけ、IDと秘密のキーで本人確認する(認証できなければ、対局はできるがレートには反映しない)
+      if (newSeat && s.rated && this.env.DB && auth) {
+        const p = await authenticate(this.env.DB, auth.id, auth.secret).catch(() => null);
+        if (p && s.playerIds[other(color)] !== p.id) {           // 同じプレイヤーが両側に座る(自作自演)場合は反映しない
+          s.playerIds[color] = p.id; s.ratings[color] = p.rating; s.names[color] = p.name;
+        }
+      }
       for (const old of this.socketsOf(color)) {
         if (old !== ws) { try { old.close(4000, "別の場所から接続されました"); } catch { /* */ } }
       }
@@ -240,9 +264,41 @@ export class GameRoom extends DurableObject<Env> {
     s.turnStartedAt = null;
     s.drawOffer = null;
     s.rematch = { w: false, b: false };
+    await this.applyRating(result);
     await this.save();
     this.broadcast({ t: "gameover", result, clock: this.clock() });
+    if (s.ratingChanges) this.broadcast({ t: "rating", changes: s.ratingChanges });
     await this.scheduleAlarm();
+  }
+
+  /** レート戦なら、Eloで新しいレーティングを計算して、D1に保存する(戦績と棋譜も) */
+  private async applyRating(result: GameResult) {
+    const s = this.s, w = s.playerIds.w, b = s.playerIds.b, db = this.env.DB;
+    if (!s.rated || !db || !w || !b || w === b || s.moves.length < MIN_PLIES_FOR_RATING || s.ratingChanges) return;
+    try {
+      const { results } = await db.prepare("SELECT id, name, rating, games FROM players WHERE id IN (?, ?)").bind(w, b).all<{ id: string; name: string; rating: number; games: number }>();
+      const rw = results.find((r) => r.id === w), rb = results.find((r) => r.id === b);
+      if (!rw || !rb) return;
+      const upd = updateElo({ white: rw, black: rb, winner: result.winner });
+      const now = Date.now();
+      const outcome = (c: Color) => (result.winner === null ? "d" : result.winner === c ? "w" : "l");
+      const update = (id: string, rating: number, o: string) =>
+        db.prepare("UPDATE players SET rating = ?, games = games + 1, wins = wins + ?, losses = losses + ?, draws = draws + ?, updated_at = ? WHERE id = ?")
+          .bind(rating, o === "w" ? 1 : 0, o === "l" ? 1 : 0, o === "d" ? 1 : 0, now, id);
+      this.chess.setHeader("White", rw.name); this.chess.setHeader("Black", rb.name);
+      this.chess.setHeader("Result", result.winner === "w" ? "1-0" : result.winner === "b" ? "0-1" : "1/2-1/2");
+      await db.batch([
+        update(w, upd.white, outcome("w")),
+        update(b, upd.black, outcome("b")),
+        db.prepare("INSERT INTO games (id, room, white_id, black_id, white_name, black_name, winner, reason, plies, white_before, black_before, white_after, black_after, pgn, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .bind(crypto.randomUUID(), this.roomName(), w, b, rw.name, rb.name, result.winner, result.reason, s.moves.length,
+            Math.round(rw.rating), Math.round(rb.rating), Math.round(upd.white), Math.round(upd.black), this.chess.pgn(), now),
+      ]);
+      s.ratingChanges = { w: { before: Math.round(rw.rating), after: Math.round(upd.white) }, b: { before: Math.round(rb.rating), after: Math.round(upd.black) } };
+      s.ratings = { w: upd.white, b: upd.black };
+    } catch (e) {
+      console.error("rating update failed", e);               // レートの反映に失敗しても、対局の終了は止めない
+    }
   }
 
   private async rematch(color: Color) {
@@ -258,6 +314,9 @@ export class GameRoom extends DurableObject<Env> {
     swapped.tcLocked = true;
     swapped.tokens = { w: s.tokens.b, b: s.tokens.w };
     swapped.names = { w: s.names.b, b: s.names.w };
+    swapped.rated = s.rated;
+    swapped.playerIds = { w: s.playerIds.b, b: s.playerIds.w };
+    swapped.ratings = { w: s.ratings.b, b: s.ratings.w };
     this.s = swapped;
     this.chess = new Chess();
     await this.save();
@@ -356,6 +415,9 @@ export class GameRoom extends DurableObject<Env> {
       timeControl: this.s.tc,
       result: this.s.result,
       drawOffer: this.s.drawOffer,
+      rated: this.s.rated,
+      ratings: { w: this.s.ratings.w === null ? null : Math.round(this.s.ratings.w), b: this.s.ratings.b === null ? null : Math.round(this.s.ratings.b) },
+      ratingChanges: this.s.ratingChanges,
     };
   }
 

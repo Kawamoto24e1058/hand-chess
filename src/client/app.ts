@@ -2,6 +2,7 @@ import { randomRoomCode } from "../shared/protocol";
 import { audioState } from "./audio";
 import { Game, type GameMode } from "./game";
 import { HandInput } from "./hand";
+import { ensureIdentity, fetchLeaderboard, fetchMe, loadIdentity, renameMe, restoreFromCode, rotateSecret, transferCode, type Me } from "./identity";
 import { findMatch } from "./net";
 import { View } from "./projection";
 import { draw, drawMoveDiagram, drawOverlay } from "./render";
@@ -31,6 +32,9 @@ export class App {
   private glCanvas = $<HTMLCanvasElement>("board3d");
   private diagram = $<HTMLCanvasElement>("moveDiagram");
   private diagramCtx = this.diagram.getContext("2d")!;
+  private me: Me | null = null;
+  private codeShown = false;
+  private rotateArmedAt = 0;
   private explain = false;
   private senseIdx = store.get("senseIdx", 1);         // 奥行きの感度(0:低 1:標準 2:高)
   private hints = store.get("hints", true);         // 動かせる駒の印
@@ -56,6 +60,8 @@ export class App {
 
     this.game.depthMode = store.get("depth2", false);      // 実験機能: 初期はOFF
     this.wireStart(); this.wireGame(); this.wireModal(); this.wireKeys();
+    this.wireProfile();
+    void this.refreshMe();
     this.handleInviteLink();
     this.show(this.hasInvite() ? "start" : "title");
     requestAnimationFrame((t) => this.frame(t));
@@ -108,6 +114,9 @@ export class App {
     this.lastResultSeq = this.game.resultSeq;
     this.renderedMoves = [];
     $("modal").hidden = true;
+    const idn = loadIdentity();
+    this.game.auth = idn ?? undefined;                                  // レート戦で、この人の戦績として保存するための本人確認
+    if (idn && this.me && this.me.profile.name !== this.playerName) void renameMe(idn, this.playerName).then(() => this.refreshMe());
     this.game.start(mode, this.playerName);
     this.show("game");
     if (this.useCamera) void this.input.startCamera(); else this.input.stopCamera();
@@ -199,6 +208,9 @@ export class App {
     $("joinInvite").onclick = () => join($("inviteCode").textContent ?? "");
 
     const search = async () => {
+      const idn = await ensureIdentity(this.playerName);            // レート戦のため、まだ無ければ、ここでプレイヤーを登録する
+      if (!idn) this.toast("ランキングに接続できないため、今回はレートなしで遊びます", 4000);
+      else void this.refreshMe();
       this.show("lobby");
       const t0 = Date.now();
       $("lobbyTitle").textContent = "対戦相手を探しています…";
@@ -290,6 +302,88 @@ export class App {
     $("calibLater").onclick = () => { this.calibDismissed = true; };
   }
 
+
+  // ---------- ランキング / マイページ / 引き継ぎコード ----------
+  private async refreshMe() {
+    const idn = loadIdentity();
+    if (!idn) { this.me = null; setText($("myRating"), "ランキング"); return; }
+    this.me = await fetchMe(idn);
+    const p = this.me?.profile;
+    setText($("myRating"), p ? `${p.rating}${p.rank ? ` (${p.rank}位)` : ""}` : "ランキング");
+  }
+
+  private wireProfile() {
+    const modal = $("profileModal");
+    $("openProfile").onclick = () => { modal.hidden = false; this.showProfileTab("rank"); };
+    $("pfClose").onclick = () => { modal.hidden = true; };
+    modal.addEventListener("pointerdown", (e) => { if (e.target === modal) modal.hidden = true; });
+    document.querySelectorAll<HTMLButtonElement>("#pfTabs button").forEach((b) => { b.onclick = () => this.showProfileTab(b.dataset.tab as "rank" | "me"); });
+
+    $("codeShow").onclick = () => { this.codeShown = !this.codeShown; this.renderCode(); };
+    $("codeCopy").onclick = async () => {
+      const idn = loadIdentity(); if (!idn) return;
+      try { await navigator.clipboard.writeText(transferCode(idn)); this.toast("引き継ぎコードをコピーしました。安全な場所に保管してください", 4000); } catch { this.toast("コピーできませんでした。「表示」から手動でコピーしてください", 4000); }
+    };
+    $("restoreBtn").onclick = async () => {
+      const code = ($("restoreInput") as HTMLInputElement).value;
+      const me = await restoreFromCode(code);
+      if (!me) return this.toast("復元できませんでした。コードを確認してください", 4000);
+      ($("restoreInput") as HTMLInputElement).value = "";
+      $<HTMLInputElement>("name").value = me.profile.name; $("name").dispatchEvent(new Event("input"));
+      store.set("name", me.profile.name);
+      await this.refreshMe(); this.showProfileTab("me");
+      this.toast(`${me.profile.name} さんのレーティング(${me.profile.rating})を復元しました`, 4000);
+    };
+    $("rotateBtn").onclick = async () => {
+      const idn = loadIdentity(); if (!idn) return;
+      const now = performance.now();
+      if (now - this.rotateArmedAt > 4000) { this.rotateArmedAt = now; return this.toast("古いコードは使えなくなります。もう一度押すと再発行します", 4000); }
+      this.rotateArmedAt = 0;
+      const next = await rotateSecret(idn);
+      this.toast(next ? "コードを再発行しました。新しいコードを保管してください" : "再発行できませんでした", 4000);
+      this.codeShown = false; this.renderCode();
+    };
+  }
+
+  private renderCode() {
+    const idn = loadIdentity(), box = $<HTMLInputElement>("codeBox");
+    box.value = idn ? (this.codeShown ? transferCode(idn) : "•".repeat(24)) : "(まだありません)";
+    setText($("codeShow"), this.codeShown ? "隠す" : "表示");
+  }
+
+  private async showProfileTab(tab: "rank" | "me") {
+    document.querySelectorAll<HTMLButtonElement>("#pfTabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    $("pfRank").hidden = tab !== "rank"; $("pfMe").hidden = tab !== "me";
+    if (tab === "rank") {
+      const rows = await fetchLeaderboard();
+      const mine = this.me?.profile.name;
+      $("lbEmpty").hidden = rows.length > 0;
+      $("lbList").replaceChildren(...rows.map((r) => {
+        const li = document.createElement("li"); if (r.name === mine) li.className = "me";
+        li.innerHTML = `<span class="no">${r.rank}</span><span></span><span class="rt">${r.rating}</span><span class="gm">${r.games}戦</span>`;
+        (li.children[1] as HTMLElement).textContent = r.name;          // 名前はtextContentで入れる(HTMLとして解釈させない)
+        return li;
+      }));
+    } else {
+      await this.refreshMe();
+      this.codeShown = false; this.renderCode();
+      const me = this.me;
+      if (!me) {
+        $("meSummary").textContent = "まだプレイヤー登録がありません。ランダム対戦(レート戦)を遊ぶと、自動で作られます。別の端末の成績を引き継ぐ場合は、下の欄にコードを貼り付けてください。";
+        $("meGames").replaceChildren(); return;
+      }
+      const p = me.profile;
+      $("meSummary").innerHTML = `<div class="stat-row"><div class="stat"><b>${p.rating}</b><span>レーティング</span></div><div class="stat"><b>${p.rank ?? "—"}</b><span>順位</span></div><div class="stat"><b>${p.wins}-${p.losses}-${p.draws}</b><span>勝-敗-分</span></div></div>`;
+      $("meGames").replaceChildren(...me.games.map((g) => {
+        const win = g.winner === null ? "d" : g.winner === g.myColor ? "w" : "l", d = g.after - g.before;
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="${win}">${win === "w" ? "勝ち" : win === "l" ? "負け" : "分け"}</span><span></span><span>${g.after} (${d >= 0 ? "+" : ""}${d})</span>`;
+        (li.children[1] as HTMLElement).textContent = `vs ${g.myColor === "w" ? g.black : g.white}`;
+        return li;
+      }));
+    }
+  }
+
   private async copyPgn() {
     const pgn = this.game.pgn();
     try { await navigator.clipboard.writeText(pgn); this.toast("棋譜(PGN)をコピーしました"); }
@@ -350,7 +444,8 @@ export class App {
 
     for (const [pos, color] of [["Top", top], ["Bottom", bottom]] as const) {
       const name = g.names[color] ?? (online ? "待機中…" : "");
-      setText($(`name${pos}`), name + (g.myColor === color && online ? " (あなた)" : ""));
+      const rt = g.rated && g.ratings[color] !== null ? ` · ${g.ratings[color]}` : "";
+      setText($(`name${pos}`), name + rt + (g.myColor === color && online ? " (あなた)" : ""));
       $(`dot${pos}`).classList.toggle("on", !online || g.present[color]);
       const el = $(`clock${pos}`);
       if (!clock) { setText(el, ""); } else {
@@ -363,6 +458,7 @@ export class App {
     setText($("status"), g.result ? `${resultTitle(g.result, g.myColor)} — ${reasonText(g.result.reason)}` : g.statusText());
     $("roomBox").hidden = !online;
     if (online) setText($("roomCode"), g.roomCode);
+    $("ratedBadge").hidden = !g.rated;
 
     // 指し手リスト(変化があった時だけ作り直す)
     const moves = g.moveList;
@@ -420,6 +516,16 @@ export class App {
     if (!g.result || this.screen !== "game") return;
     setText($("modalTitle"), resultTitle(g.result, g.myColor));
     setText($("modalReason"), reasonText(g.result.reason));
+    const line = $("modalRating"), ch = g.myColor && g.ratingChanges ? g.ratingChanges[g.myColor] : null;
+    line.hidden = !g.rated;
+    if (g.rated) {
+      if (ch) {
+        const d = ch.after - ch.before;
+        line.textContent = `レーティング ${ch.before} → ${ch.after} (${d >= 0 ? "+" : ""}${d})`;
+        line.className = `rating-line ${d > 0 ? "up" : d < 0 ? "down" : "flat"}`;
+        void this.refreshMe();
+      } else { line.textContent = "この対局は、レートに反映されません(手数が少ない・未登録など)"; line.className = "rating-line flat"; line.style.fontSize = "13px"; }
+    }
     ($("modalRematch") as HTMLButtonElement).disabled = g.mode.kind === "online" && !g.myColor;
     $("modal").hidden = false;
   }

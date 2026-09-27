@@ -22,6 +22,8 @@ export class Matchmaker extends DurableObject<Env> {
     if (partner && partner.readyState === WebSocket.READY_STATE_OPEN) {
       this.waiting = null;
       const room = randomRoomCode();
+      // マッチングで作った部屋だけを、レート戦にする(クライアントの申告では、レート戦の部屋は作れない)
+      try { await this.env.GAME_ROOM.get(this.env.GAME_ROOM.idFromName(room)).markRated(); } catch (e) { console.error("markRated failed", e); }
       send(partner, { t: "matched", room });
       send(server, { t: "matched", room });
       partner.close(1000, "matched");

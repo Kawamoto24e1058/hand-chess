@@ -26,6 +26,7 @@ export class RoomConnection {
     private name: string,
     private onMsg: (m: ServerMsg) => void,
     private onStatus: (s: NetStatus) => void,
+    private auth?: { id: string; secret: string },
   ) {
     this.connect();
   }
@@ -39,7 +40,7 @@ export class RoomConnection {
     ws.onopen = () => {
       this.retry = 0;
       this.setStatus("open");
-      this.send({ t: "join", name: this.name, token: loadToken(this.room) });
+      this.send({ t: "join", name: this.name, token: loadToken(this.room), auth: this.auth });
       clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => this.send({ t: "ping" }), 25_000);
     };

@@ -55,7 +55,7 @@ export interface Names {
 }
 
 export type ClientMsg =
-  | { t: "join"; name: string; token?: string }
+  | { t: "join"; name: string; token?: string; auth?: { id: string; secret: string } }
   | { t: "move"; move: MoveInput }
   | { t: "resign" }
   | { t: "draw-offer" }
@@ -63,6 +63,10 @@ export type ClientMsg =
   | { t: "draw-decline" }
   | { t: "rematch" }
   | { t: "ping" };
+
+/** レート戦の結果: 対局前後のレーティング */
+export interface RatingChange { before: number; after: number }
+export interface RatingChanges { w: RatingChange | null; b: RatingChange | null }
 
 export type ServerMsg =
   | { t: "joined"; color: Color | null; token: string; room: string }
@@ -76,10 +80,14 @@ export type ServerMsg =
       timeControl: TimeControl;
       result: GameResult | null;
       drawOffer: Color | null;
+      rated: boolean;                                  // レート戦か
+      ratings: { w: number | null; b: number | null };  // 対局前の各自のレーティング(レート戦で、登録済みのプレイヤーのみ)
+      ratingChanges: RatingChanges | null;             // 終局後、レート戦なら反映結果
     }
   | { t: "move"; move: MoveInput; san: string; clock: ClockState }
   | { t: "presence"; present: Presence; names: Names; abandonIn: AbandonIn }
   | { t: "gameover"; result: GameResult; clock: ClockState }
+  | { t: "rating"; changes: RatingChanges }
   | { t: "draw-offer"; by: Color }
   | { t: "draw-declined" }
   | { t: "rematch-offer"; by: Color }
@@ -95,3 +103,20 @@ export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const ROOM_CODE_LENGTH = 5;
 export const randomRoomCode = (): string =>
   Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)]).join("");
+
+// ---------- HTTP API(プレイヤー登録・ランキング) ----------
+export interface ApiProfile {
+  id: string;
+  name: string;
+  rating: number;
+  games: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  rank: number | null;
+}
+export interface ApiLeaderboardRow { rank: number; name: string; rating: number; games: number }
+export interface ApiGameRow {
+  id: string; playedAt: number; white: string; black: string; winner: Color | null; reason: string;
+  myColor: Color; before: number; after: number;
+}

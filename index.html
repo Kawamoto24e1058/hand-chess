@@ -35,6 +35,7 @@
       <nav class="topbar">
         <button id="backTitle" class="ghost-btn">← タイトル</button>
         <div class="profile">
+          <button id="openProfile" class="ghost-btn" title="ランキングとマイページ">🏆 <span id="myRating">ランキング</span></button>
           <label class="switch" title="Webカメラで手を追跡して操作します">
             <input id="useCamera" type="checkbox" checked><span class="track"></span><span class="switch-label">✋ カメラ操作</span>
           </label>
@@ -80,12 +81,12 @@
             <div><h2>オンライン対戦</h2><p>世界のどこかの誰かと、手だけで一局。</p></div>
           </div>
           <div class="seg tabs" id="onlineTabs" role="tablist">
-            <button type="button" data-tab="random" role="tab" class="on">ランダム</button>
+            <button type="button" data-tab="random" role="tab" class="on">レート戦</button>
             <button type="button" data-tab="create" role="tab">部屋を作る</button>
             <button type="button" data-tab="join" role="tab">コードで参加</button>
           </div>
           <div class="panel" data-panel="random">
-            <p class="note">待っている人がいればすぐ対局が始まります(5分 + 3秒)。</p>
+            <p class="note">ランダムな相手とのレート戦です(5分 + 3秒)。勝敗でレーティングが変わり、ランキングに載ります。</p>
             <button id="startRandom" class="btn-primary">対戦相手を探す</button>
           </div>
           <div class="panel" data-panel="create" hidden>
@@ -154,7 +155,7 @@
       <div class="player" id="playerTop"><span class="dot" id="dotTop"></span><span class="pname" id="nameTop"></span><span class="clock" id="clockTop"></span></div>
 
       <div id="roomBox" class="roombox" hidden>
-        部屋 <b id="roomCode"></b>
+        <span id="ratedBadge" class="badge" hidden>レート戦</span> 部屋 <b id="roomCode"></b>
         <button id="copyLink" class="small">招待リンクをコピー</button>
       </div>
 
@@ -211,12 +212,44 @@
     <div class="dialog">
       <h2 id="modalTitle"></h2>
       <p id="modalReason"></p>
+      <p id="modalRating" class="rating-line" hidden></p>
       <div class="row">
         <button id="modalRematch" class="primary">再戦</button>
         <button id="modalHome">ホームへ</button>
         <button id="modalPgn">棋譜をコピー</button>
         <button id="modalClose">盤を見る</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ===== ランキング / マイページ ===== -->
+  <div id="profileModal" class="modal" hidden>
+    <div class="dialog wide">
+      <div class="seg tabs" id="pfTabs" role="tablist">
+        <button type="button" data-tab="rank" class="on">ランキング</button>
+        <button type="button" data-tab="me">マイページ</button>
+      </div>
+      <section id="pfRank">
+        <ol id="lbList" class="lb"></ol>
+        <p class="note" id="lbEmpty" hidden>まだ対局がありません。ランダム対戦(レート戦)を遊ぶと載ります。</p>
+      </section>
+      <section id="pfMe" hidden>
+        <div id="meSummary"></div>
+        <h3>直近の対局</h3>
+        <ul id="meGames" class="games"></ul>
+        <h3>引き継ぎコード</h3>
+        <p class="note">端末を替えたり、ブラウザのデータを消したりしても、このコードでレーティングを引き継げます。<b>パスワードと同じなので、他の人には見せないでください。</b></p>
+        <div class="row">
+          <input id="codeBox" readonly value="••••••••••••••••" aria-label="引き継ぎコード">
+          <button id="codeShow">表示</button><button id="codeCopy">コピー</button>
+        </div>
+        <div class="row">
+          <input id="restoreInput" placeholder="HC-…(別の端末のコードを貼り付け)" aria-label="復元するコード">
+          <button id="restoreBtn">復元</button>
+          <button id="rotateBtn" class="danger">コードを再発行</button>
+        </div>
+      </section>
+      <div class="row" style="justify-content:center"><button id="pfClose" class="primary">閉じる</button></div>
     </div>
   </div>
 

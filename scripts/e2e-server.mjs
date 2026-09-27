@@ -1,5 +1,6 @@
 // サーバー(GameRoom / Matchmaker)の結合テスト: node scripts/e2e-server.mjs [http://localhost:5199]
-const BASE = (process.argv[2] ?? "http://localhost:5199").replace(/^http/, "ws");
+const HTTP = process.argv[2] ?? "http://localhost:5199";
+const BASE = HTTP.replace(/^http/, "ws");
 let failed = 0;
 const ok = (cond, name) => { console.log(`${cond ? "PASS" : "FAIL"}  ${name}`); if (!cond) failed++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -97,6 +98,50 @@ const m1 = client(`${BASE}/ws/queue`), m2 = client(`${BASE}/ws/queue`);
 await Promise.all([m1.opened, m2.opened]);
 const r1 = await m1.wait((m) => m.t === "matched"), r2 = await m2.wait((m) => m.t === "matched");
 ok(r1?.room && r1.room === r2?.room, "ランダムマッチで2人に同じ部屋コードが通知される");
+
+
+// ---------- レート戦(ランダムマッチ + 認証 + Elo + 保存) ----------
+const post = async (path, body) => { const r = await fetch(HTTP + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, ...(await r.json().catch(() => ({}))) }; };
+const uname = (x) => x + Math.random().toString(36).slice(2, 5);
+const pa = await post("/api/register", { name: uname("RA") }), pb = await post("/api/register", { name: uname("RB") });
+ok(pa.status === 201 && pa.id && pa.secret && pa.rating === 1200, "プレイヤー登録でID・秘密のキー・初期レート1200が返る");
+ok((await post("/api/me", { id: pa.id, secret: "wrong" })).status === 401, "秘密のキーが違うと認証できない");
+
+async function matchedRoom() {
+  const q1 = client(`${BASE}/ws/queue`), q2 = client(`${BASE}/ws/queue`); await Promise.all([q1.opened, q2.opened]);
+  const m = await q1.wait((x) => x.t === "matched"); await q2.wait((x) => x.t === "matched"); return m.room;
+}
+async function playFoolsMate(room, whiteAuth, blackAuth) {
+  const W = client(`${BASE}/ws/room/${room}`), B = client(`${BASE}/ws/room/${room}`); await Promise.all([W.opened, B.opened]);
+  W.send({ t: "join", name: "x", auth: whiteAuth }); const sw = await W.wait((m) => m.t === "sync");
+  B.send({ t: "join", name: "y", auth: blackAuth }); await B.wait((m) => m.t === "sync");
+  for (const [who, from, to] of [[W, "f2", "f3"], [B, "e7", "e5"], [W, "g2", "g4"], [B, "d8", "h4"]]) { who.send({ t: "move", move: { from, to } }); await sleep(250); }
+  return { W, B, sync: sw };
+}
+
+let room = await matchedRoom();
+let g = await playFoolsMate(room, { id: pa.id, secret: pa.secret }, { id: pb.id, secret: pb.secret });
+ok(g.sync.rated === true, "ランダムマッチで作った部屋は、レート戦になっている");
+const rt = await g.W.wait((m) => m.t === "rating", 2500);
+ok(rt?.changes.w.before === 1200 && rt.changes.w.after === 1180 && rt.changes.b.after === 1220, "フールズメイト(黒の勝ち)で、黒+20 / 白-20 が反映される", `(${JSON.stringify(rt?.changes)})`);
+const lb = await (await fetch(HTTP + "/api/leaderboard")).json();
+ok(lb.rows.some((r) => r.name === pb.name && r.rating === 1220 && r.games === 1), "ランキングに、対局後のレートが載る");
+const me = await post("/api/me", { id: pb.id, secret: pb.secret });
+ok(me.profile?.rating === 1220 && me.profile.wins === 1 && me.games?.length === 1 && me.games[0].after === 1220, "プロフィールに、戦績と直近の対局が保存されている");
+
+// 自作自演(同じプレイヤーが両側): レートに反映しない
+room = await matchedRoom();
+g = await playFoolsMate(room, { id: pa.id, secret: pa.secret }, { id: pa.id, secret: pa.secret });
+ok((await g.W.wait((m) => m.t === "rating", 1500)) === null, "同じプレイヤーが両側に座っても、レートには反映されない");
+
+// 部屋コード対戦(レート戦ではない)
+const codeRoom = "T" + Math.random().toString(36).slice(2, 6).toUpperCase();
+g = await playFoolsMate(codeRoom, { id: pa.id, secret: pa.secret }, { id: pb.id, secret: pb.secret });
+ok(g.sync.rated === false && (await g.W.wait((m) => m.t === "rating", 1200)) === null, "部屋コード対戦は、レートに反映されない");
+
+// キーの再発行(引き継ぎコードの無効化)
+const rot = await post("/api/rotate", { id: pb.id, secret: pb.secret });
+ok(rot.secret && (await post("/api/me", { id: pb.id, secret: pb.secret })).status === 401 && (await post("/api/me", { id: pb.id, secret: rot.secret })).status === 200, "キーを再発行すると、古いキーは使えなくなる");
 
 console.log(failed ? `\n${failed} 件失敗` : "\nすべて成功");
 process.exit(failed ? 1 : 0);

@@ -198,3 +198,26 @@ canvas#board3d { position: absolute; inset: 0; z-index: 1; width: 100%; height: 
 @media (max-width: 999px) { .diagram { align-self: flex-end; margin: -6px 4px 0 0; } }
 
 .lobby-time { font: 700 22px ui-monospace, monospace; color: var(--gold); margin: 4px 0 0; }
+
+/* ランキング / マイページ / レートの表示 */
+.dialog.wide { text-align: left; width: min(94vw, 560px); max-height: 88vh; overflow: auto; }
+.dialog.wide .seg { display: flex; margin-top: 0; }
+.dialog.wide .seg button { flex: 1; }
+.dialog.wide h3 { margin: 16px 0 6px; font-size: 15px; color: var(--dim); }
+.dialog.wide input { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 13px; }
+.lb { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.lb li { display: grid; grid-template-columns: 2.2em 1fr auto auto; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 10px; background: rgba(255,255,255,.03); }
+.lb li.me { background: rgba(102,204,255,.14); outline: 1px solid var(--accent); }
+.lb .no { font: 700 14px ui-monospace, monospace; color: var(--dim); text-align: center; }
+.lb li:nth-child(1) .no { color: #ffd54a; } .lb li:nth-child(2) .no { color: #cfd6e6; } .lb li:nth-child(3) .no { color: #e0a070; }
+.lb .rt { font: 800 16px ui-monospace, monospace; color: var(--gold); }
+.lb .gm { font-size: 12px; color: var(--dim); }
+.stat-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.stat { flex: 1; min-width: 88px; background: rgba(255,255,255,.04); border-radius: 12px; padding: 10px 12px; text-align: center; }
+.stat b { display: block; font: 800 24px ui-monospace, monospace; color: var(--gold); }
+.stat span { font-size: 12px; color: var(--dim); }
+.games { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
+.games li { display: grid; grid-template-columns: 3em 1fr auto; gap: 8px; align-items: center; padding: 5px 10px; border-radius: 10px; background: rgba(255,255,255,.03); font-size: 13px; }
+.games .w { color: var(--ok); font-weight: 800; } .games .l { color: var(--danger); font-weight: 800; } .games .d { color: var(--dim); font-weight: 800; }
+.rating-line { font: 700 20px ui-monospace, monospace; margin: 0 0 12px; }
+.rating-line.up { color: var(--ok); } .rating-line.down { color: var(--danger); } .rating-line.flat { color: var(--dim); }

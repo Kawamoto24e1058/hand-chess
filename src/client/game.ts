@@ -1,5 +1,5 @@
 import { Chess } from "chess.js";
-import type { AbandonIn, ClockState, Color, GameResult, MoveInput, Names, Presence, ServerMsg, TimeControl } from "../shared/protocol";
+import type { AbandonIn, RatingChanges, ClockState, Color, GameResult, MoveInput, Names, Presence, ServerMsg, TimeControl } from "../shared/protocol";
 import { sfx } from "./audio";
 import { Engine } from "./engine";
 import type { HandInput, PinchEndReason, Pos } from "./hand";
@@ -53,6 +53,10 @@ export class Game {
   present: Presence = { w: true, b: true };
   timeControl: TimeControl = { baseMs: 0, incrementMs: 0 };
   drawOffer: Color | null = null;
+  rated = false;                                        // レート戦か
+  ratings: { w: number | null; b: number | null } = { w: null, b: null };
+  ratingChanges: RatingChanges | null = null;           // 終局後の反映結果
+  auth: { id: string; secret: string } | undefined;     // レート戦で本人確認に使う(未登録ならレートなし)
   rematchOffer: Color | null = null;
   netStatus: NetStatus | "none" = "none";
   roomCode = "";
@@ -95,12 +99,12 @@ export class Game {
     this.myColor = mode.kind === "online" ? null : mode.kind === "ai" ? "w" : null;
     this.flip = false;
     this.names = mode.kind === "ai" ? { w: this.playerName, b: `AI (Stockfish)` } : mode.kind === "local" ? { w: "白", b: "黒" } : { w: null, b: null };
-    this.present = { w: true, b: true };
+    this.present = { w: true, b: true }; this.rated = false; this.ratings = { w: null, b: null }; this.ratingChanges = null;
     this.timeControl = { baseMs: 0, incrementMs: 0 };
     this.clockBase = { w: 0, b: 0, turn: "w", running: false, at: performance.now() };
     if (mode.kind === "online") {
       this.roomCode = mode.room; this.present = { w: false, b: false };
-      this.net = new RoomConnection(mode.room, mode.tc, this.playerName, (m) => this.onServer(m), (s) => { this.netStatus = s; });
+      this.net = new RoomConnection(mode.room, mode.tc, this.playerName, (m) => this.onServer(m), (s) => { this.netStatus = s; }, this.auth);
     } else { this.roomCode = ""; this.netStatus = "none"; }
   }
 
@@ -113,7 +117,7 @@ export class Game {
   private resetBoard() {
     this.chess = new Chess(); this.moveList = []; this.lastMove = null; this.anim = null; this.anim2 = null; this.promo = null; this.particles = [];
     this.held = null; this.input.holding = false; this.thinking = false;
-    this.result = null; this.drawOffer = null; this.rematchOffer = null; this.serverCount = 0;
+    this.result = null; this.drawOffer = null; this.rematchOffer = null; this.serverCount = 0; this.ratingChanges = null;
     this.turnLockUntil = 0; if (this.mode.kind === "local") this.flip = false;
   }
 
@@ -422,6 +426,7 @@ export class Game {
         this.rebuild(m.moves);
         this.names = m.names; this.present = m.present; this.timeControl = m.timeControl;
         this.abandon = { v: m.abandonIn, at: performance.now() };
+        this.rated = m.rated; this.ratings = m.ratings; this.ratingChanges = m.ratingChanges;
         this.setClock(m.clock); this.drawOffer = m.drawOffer; this.rematchOffer = null;
         const finished = m.result && !this.result;
         this.result = m.result;
@@ -439,6 +444,7 @@ export class Game {
         break;
       }
       case "presence": this.present = m.present; this.names = m.names; this.abandon = { v: m.abandonIn, at: performance.now() }; break;
+      case "rating": this.ratingChanges = m.changes; break;
       case "gameover": this.setClock(m.clock); this.setResult(m.result); break;
       case "draw-offer": if (m.by !== this.myColor) { this.drawOffer = m.by; sfx.notify(); this.onDrawOffer?.(); } break;
       case "draw-declined": this.drawOffer = null; this.onToast?.("引き分けの提案は断られました"); break;

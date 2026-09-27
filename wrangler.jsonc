@@ -15,6 +15,9 @@
       { "name": "MATCHMAKER", "class_name": "Matchmaker" }
     ]
   },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "hand-chess", "database_id": "8fb080be-4a43-4340-8dc7-5dd431dad61f", "migrations_dir": "migrations" }
+  ],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["GameRoom", "Matchmaker"] }
   ]
