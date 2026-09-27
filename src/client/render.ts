@@ -127,7 +127,6 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, g: Game, opts: Render
   if (opts.explain) drawExplain(ctx, g);
 
   drawCursorHelp(ctx, g);
-  drawMoveDiagram(ctx, g);
 
   // 終局バナー
   if (g.result && !g.anim) {
@@ -198,21 +197,25 @@ function movePattern(type: string, forwardUp: boolean, range: number) {
   return { dots, caps };
 }
 
-function drawMoveDiagram(ctx: CanvasRenderingContext2D, g: Game) {
-  if (g.result) return;
+/**
+ * 動き方の図を、専用の小さなキャンバス(画面の右下、盤の外)に描く。何も指していなければ false を返す。
+ * 駒を中央に置いた7x7の小さな盤に、動ける先を緑の点(取るときだけは赤い輪)で描く。文字は使わない。
+ */
+export function drawMoveDiagram(ctx: CanvasRenderingContext2D, g: Game, size: number): boolean {
+  ctx.clearRect(0, 0, size, size);
+  if (g.result) return false;
   const hov = g.hoverInfo();
   const info = g.held ? { type: g.held.type, color: g.held.color } : hov ? { type: hov.type, color: hov.color } : null;
-  if (!info) return;
+  if (!info) return false;
 
-  const N = 7, cell = 20, pad = 8, size = N * cell, m = 12;
-  const x0 = S - size - pad * 2 - m, y0 = S - size - pad * 2 - m, bx = x0 + pad, by = y0 + pad;
+  const N = 7, pad = 8, cell = (size - pad * 2) / N, bx = pad, by = pad;
   const forwardUp = info.color === (g.flip ? "b" : "w");           // 画面の上に進むのは、手前側の陣営
 
-  ctx.fillStyle = "rgba(10,13,20,.85)"; ctx.strokeStyle = "rgba(140,160,210,.55)"; ctx.lineWidth = 1.5;
-  roundRect(ctx, x0, y0, size + pad * 2, size + pad * 2, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(10,13,20,.92)"; ctx.strokeStyle = "rgba(140,160,210,.55)"; ctx.lineWidth = 1.5;
+  roundRect(ctx, 1, 1, size - 2, size - 2, 14); ctx.fill(); ctx.stroke();
   for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
     ctx.fillStyle = (r + c) % 2 ? "rgba(82,98,127,.95)" : "rgba(159,176,204,.95)";
-    ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+    ctx.fillRect(bx + c * cell, by + r * cell, cell + 0.5, cell + 0.5);
   }
   const cx = (c: number) => bx + (3 + c) * cell + cell / 2, cy = (r: number) => by + (3 + r) * cell + cell / 2;
   const { dots, caps } = movePattern(info.type, forwardUp, 3);
@@ -223,10 +226,10 @@ function drawMoveDiagram(ctx: CanvasRenderingContext2D, g: Game) {
   for (const [dx, dy] of caps) {                                    // ポーンの「取るときだけ」の斜め前
     ctx.strokeStyle = "#ff5a5a"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx(dx), cy(dy), cell * 0.3, 0, 7); ctx.stroke();
   }
-  // 駒(中央)
   ctx.font = `${cell * 1.35}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
   ctx.lineWidth = 4; ctx.strokeStyle = info.color === "w" ? "#1b1b1b" : "#e6ecff"; ctx.strokeText(glyphOf(info.type), cx(0), cy(0) + 1);
   ctx.fillStyle = info.color === "w" ? "#fff6dc" : "#1c2a66"; ctx.fillText(glyphOf(info.type), cx(0), cy(0) + 1);
+  return true;
 }
 
 /** LT用: 生の指先(赤) vs One Euro後(水色)の軌跡、ピンチ比のグラフと閾値、遅延補正の位置(黄) */

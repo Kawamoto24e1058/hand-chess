@@ -4,7 +4,7 @@ import { Game, type GameMode } from "./game";
 import { HandInput } from "./hand";
 import { findMatch } from "./net";
 import { View } from "./projection";
-import { draw, drawOverlay } from "./render";
+import { draw, drawMoveDiagram, drawOverlay } from "./render";
 import { store } from "./store";
 import { PIECE_INFO, formatClock, reasonText, resultTitle } from "./text";
 import { glyphOf } from "./pieces";
@@ -29,6 +29,8 @@ export class App {
   private gl: { view: View; render(g: Game, opts: { hints: boolean }): void } | null = null;      // 3D描画(使えない環境では2D描画にフォールバック)
   private glFailed = false;
   private glCanvas = $<HTMLCanvasElement>("board3d");
+  private diagram = $<HTMLCanvasElement>("moveDiagram");
+  private diagramCtx = this.diagram.getContext("2d")!;
   private explain = false;
   private hints = store.get("hints", true);         // 動かせる駒の印
   private debug = false;
@@ -285,6 +287,8 @@ export class App {
       const opts = { explain: this.explain, debug: this.debug, hints: this.hints };
       if (this.gl) { this.gl.render(this.game, opts); drawOverlay(this.ctx, this.game, opts); }
       else draw(this.ctx, this.game, opts);
+      this.diagramCtx.setTransform(2, 0, 0, 2, 0, 0);                                   // 高精細(2倍)で描く
+      this.diagram.classList.toggle("on", drawMoveDiagram(this.diagramCtx, this.game, 168));
       this.input.video.hidden = !(this.gl && this.input.cameraState === "ready");     // 3D時はDOMのビデオで映す
       this.updateHud();
     }
