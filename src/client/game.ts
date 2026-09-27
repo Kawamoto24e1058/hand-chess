@@ -57,6 +57,7 @@ export class Game {
   private serverCount = 0;
   private playerName = "Player";
   private engine = new Engine();
+  private turnLockUntil = 0;             // 盤を回している間は、駒を掴めないようにする
   private token = 0;                   // AI思考中に画面を離れた時、古い応答を捨てるため
 
   constructor(readonly input: HandInput, public view: View) {
@@ -92,6 +93,7 @@ export class Game {
     this.chess = new Chess(); this.moveList = []; this.lastMove = null; this.anim = null; this.particles = [];
     this.held = null; this.input.holding = false; this.thinking = false;
     this.result = null; this.drawOffer = null; this.rematchOffer = null; this.serverCount = 0;
+    this.turnLockUntil = 0; if (this.mode.kind === "local") this.flip = false;
   }
 
   // ---------- 入力 ----------
@@ -173,6 +175,7 @@ export class Game {
   }
 
   canMoveNow(color: Color): boolean {
+    if (performance.now() < this.turnLockUntil) return false;
     if (this.thinking || this.result || this.chess.turn() !== color || this.anim?.own) return false;
     switch (this.mode.kind) {
       case "ai": return color === "w";
@@ -240,6 +243,11 @@ export class Game {
     if (a.fx.captured) { sfx.capture(); this.burst(a.to, a.fx.capturedColor); } else sfx.place();
     if (a.fx.san.endsWith("+")) sfx.check();
     if (this.anim === a) this.anim = null;
+    // 二人対戦: 次に指す人の陣営が手前に来るように、盤を回す(描画側がなめらかに回す)
+    if (this.mode.kind === "local" && !this.result) {
+      const f = this.chess.turn() === "b";
+      if (f !== this.flip) { this.flip = f; this.turnLockUntil = performance.now() + 900; }
+    }
   }
 
   private burst(sq: string, capturedColor: Color) {

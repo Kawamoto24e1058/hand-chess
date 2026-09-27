@@ -297,7 +297,7 @@ export class App {
 
   private updateHud() {
     const g = this.game, inp = this.input;
-    const bottom: Color = g.myColor ?? "w", top: Color = bottom === "w" ? "b" : "w";
+    const bottom: Color = g.mode.kind === "local" ? (g.flip ? "b" : "w") : (g.myColor ?? "w"), top: Color = bottom === "w" ? "b" : "w";
     const online = g.mode.kind === "online";
     const clock = g.displayClock();
 

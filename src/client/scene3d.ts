@@ -407,7 +407,7 @@ export function makeMaterials(): StageMaterials {
 }
 
 /** 盤(枠 + 64マス)。floor=true なら舞台の床の円盤も置く。マスは file 0..7 → x=-3.5..3.5、rank 1..8 → z=3.5..-3.5 */
-export function buildBoardMeshes(scene: THREE.Scene, floor: boolean) {
+export function buildBoardMeshes(scene: THREE.Object3D, floor: boolean) {
   if (floor) {
     const f = new THREE.Mesh(new THREE.CircleGeometry(30, 64), new THREE.MeshStandardMaterial({ color: 0x0d1220, roughness: 0.55, metalness: 0.5 }));
     f.rotation.x = -Math.PI / 2; f.position.y = -0.26; f.receiveShadow = true;

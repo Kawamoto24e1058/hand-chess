@@ -64,6 +64,10 @@ export class GameRenderer {
   readonly view: View3D;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
+  private stage = new THREE.Group();                   // 盤・駒・印をまとめたグループ(手番が変わると回す)
+  private spin = 0;                                    // 回転の残り(ラジアン)。0に向かってなめらかに戻す
+  private lastFlip: boolean | null = null;
+  private lastT = performance.now();
   private camera = new THREE.PerspectiveCamera(30, 1, 0.1, 80);
   private mats: StageMaterials;
   private pool = new Map<string, THREE.Group[]>();
@@ -103,14 +107,15 @@ export class GameRenderer {
 
     this.view = new View3D(this.camera);
     this.mats = makeMaterials();
+    this.scene.add(this.stage);
     addStageLights(this.scene);
-    buildBoardMeshes(this.scene, false);
+    buildBoardMeshes(this.stage, false);
 
     // ハイライト用の板(盤の上に薄く重ねる)
     const flat = (color: number, geo: THREE.BufferGeometry, opacity: number) => {
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide }));
       m.rotation.x = -Math.PI / 2; m.position.y = 0.012; m.visible = false; m.renderOrder = 2;
-      this.scene.add(m);
+      this.stage.add(m);
       return m;
     };
     const sqGeo = new THREE.PlaneGeometry(0.98, 0.98);
@@ -130,7 +135,7 @@ export class GameRenderer {
     const lineGeo = new THREE.PlaneGeometry(1, 0.07); lineGeo.rotateX(-Math.PI / 2);
     this.pathLine = new THREE.Mesh(lineGeo, new THREE.MeshBasicMaterial({ color: 0xaab6ff, transparent: true, opacity: 0.55, depthWrite: false }));
     this.pathLine.position.y = 0.014; this.pathLine.visible = false; this.pathLine.renderOrder = 2;
-    this.scene.add(this.pathLine);
+    this.stage.add(this.pathLine);
     const thin = new THREE.RingGeometry(0.43, 0.47, 40), red = new THREE.RingGeometry(0.34, 0.44, 40);
     for (let i = 0; i < MAX_MOVABLE; i++) this.movableRings.push(flat(0x66e0ff, thin, 0.4));
     for (let i = 0; i < MAX_TARGETS; i++) this.captureRings.push(flat(0xff5a5a, red, 0.85));
@@ -144,7 +149,7 @@ export class GameRenderer {
     geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3));
     this.points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.13, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending }));
     this.points.frustumCulled = false;
-    this.scene.add(this.points);
+    this.stage.add(this.points);
 
     // 骨入りの手(自分の手に重ねて動かす)。読み込めなくても遊べる
     GltfHand.load(this.mats.skin, this.mats.nail, this.mats.cuff, false).then((h) => {
@@ -171,13 +176,13 @@ export class GameRenderer {
   private acquire(type: string, color: string, bottom: string): Stat {
     const key = color + type;
     const g = this.pool.get(key)?.pop() ?? buildPiece(type as PieceType, color === "w" ? this.mats.ivory : this.mats.navy);
-    g.visible = true; this.scene.add(g);
+    g.visible = true; this.stage.add(g);
     if (type === "n") g.rotation.y = this.knightYaw(color, bottom);
     return { group: g, type, color };
   }
 
   private release(s: Stat) {
-    this.scene.remove(s.group);
+    this.stage.remove(s.group);
     const key = s.color + s.type;
     const list = this.pool.get(key) ?? [];
     list.push(s.group); this.pool.set(key, list);
@@ -192,6 +197,11 @@ export class GameRenderer {
   // ---------- 毎フレーム ----------
   render(g: Game, opts: { hints: boolean } = { hints: true }) {
     const now = performance.now();
+    const dt = Math.min(0.05, (now - this.lastT) / 1000); this.lastT = now;
+    if (this.lastFlip !== null && this.lastFlip !== g.flip) this.spin = Math.PI;      // 手番が変わった: 見た目を変えずに180°回した状態から始める
+    this.lastFlip = g.flip;
+    this.spin = this.spin > 0.004 ? this.spin * Math.exp(-dt * 5.2) : 0;               // 約0.9秒でなめらかに正面へ
+    this.stage.rotation.y = this.spin;
     this.view.step();
     if (g.shake > 0.3) {                                // 駒を取った時の画面の揺れ
       this.camera.position.x += (Math.random() - 0.5) * g.shake * 0.02;
@@ -355,13 +365,13 @@ export class GameRenderer {
       grp = buildPiece(type as PieceType, color === "w" ? this.ghostMats.w : this.ghostMats.b);
       grp.traverse((o) => { (o as THREE.Mesh).castShadow = false; (o as THREE.Mesh).receiveShadow = false; o.renderOrder = 3; });
     }
-    grp.visible = true; this.scene.add(grp);
+    grp.visible = true; this.stage.add(grp);
     if (type === "n") grp.rotation.y = this.knightYaw(color, bottom);
     return { group: grp, type, color };
   }
 
   private releaseGhost(s: Stat) {
-    this.scene.remove(s.group);
+    this.stage.remove(s.group);
     const key = s.color + s.type, list = this.ghostPool.get(key) ?? [];
     list.push(s.group); this.ghostPool.set(key, list);
   }
