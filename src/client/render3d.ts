@@ -92,6 +92,8 @@ export class GameRenderer {
   private checkMark: THREE.Mesh;
   private points: THREE.Points;
   private hand: HandRig | null = null;
+  private dropLine: THREE.Mesh;                         // 手のつまむ位置から、盤まで垂直に落ちる線
+  private dropDot: THREE.Mesh;                          // 指先の真下の点(つまむと締まる)
   private handGap = OPEN_GAP;
   private handPos = new THREE.Vector3(0, 3, 2);
   private ro: ResizeObserver;
@@ -142,6 +144,13 @@ export class GameRenderer {
     // 置き先の予告(半透明の駒)
     const ghostOf = (m: THREE.Material) => { const c = m.clone(); c.transparent = true; c.opacity = 0.42; c.depthWrite = false; return c; };
     this.ghostMats = { w: ghostOf(this.mats.ivory), b: ghostOf(this.mats.navy) };
+
+    // 指先から盤へ落ちる線と、真下の点: 手が浮いて見えても、どこを指しているかが分かる
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0x9fe6ff, transparent: true, opacity: 0.5, depthWrite: false });
+    this.dropLine = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 1, 8), lineMat);
+    this.dropLine.visible = false; this.dropLine.renderOrder = 2; this.stage.add(this.dropLine);
+    this.dropDot = flat(0xffffff, new THREE.CircleGeometry(0.12, 32), 0.85);
+    this.dropDot.position.y = 0.02;
 
     // パーティクル
     const geo = new THREE.BufferGeometry();
@@ -403,6 +412,7 @@ export class GameRenderer {
     if (!h) return;
     const show = g.input.source === "hand" && !!cur && !g.result;
     h.group.visible = show;
+    this.dropLine.visible = show; this.dropDot.visible = show;
     if (!show || !cur) return;
 
     const held = g.held;
@@ -411,6 +421,13 @@ export class GameRenderer {
     this.handPos.lerp(want, 0.45);
     const targetGap = g.input.pinch ? CLOSED_GAP[(held?.type ?? "p") as PieceType] : OPEN_GAP;
     this.handGap += (targetGap - this.handGap) * 0.35;
+
+    // 落下線と真下の点(掴んでいる間は、駒の真下=影の位置を示す)
+    const px = toWorldX(cur.x), pz = toWorldZ(cur.y), top = Math.max(0.05, this.handPos.y);
+    this.dropLine.position.set(px, top / 2, pz); this.dropLine.scale.y = top;
+    this.dropDot.position.x = px; this.dropDot.position.z = pz;
+    this.dropDot.scale.setScalar(g.input.pinch ? 0.55 : 1);
+    (this.dropDot.material as THREE.MeshBasicMaterial).opacity = g.input.pinch ? 1 : 0.7;
 
     h.group.rotation.set(HAND_TILT, HAND_YAW, 0);
     const off = h.grip.clone().multiplyScalar(HAND_SCALE).applyQuaternion(h.group.quaternion);
