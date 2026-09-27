@@ -70,9 +70,10 @@ export class GameRenderer {
   private statics = new Map<string, Stat>();             // マス → 静止している駒
   private moving: Stat | null = null;                    // 移動アニメーション中の駒
   private heldObj: Stat | null = null;                   // 掴まれている駒
-  private glow = new THREE.PointLight(0x66ccff, 0, 6, 1.6);
   private lastMarks: THREE.Mesh[] = [];
-  private targetMarks: THREE.Mesh[] = [];
+  private targetMarks: THREE.Mesh[] = [];               // 行き先の点
+  private targetHalos: THREE.Mesh[] = [];              // 点の縁取り(明るいマスでも暗いマスでも見えるように)
+  private targetTints: THREE.Mesh[] = [];               // 行き先のマス全体の色付け
   private hoverRing: THREE.Mesh;
   private pieceRing: THREE.Mesh;                        // 今掴もうとしている駒の足元のリング
   private movableRings: THREE.Mesh[] = [];              // 動かせる駒の足元の印
@@ -100,7 +101,6 @@ export class GameRenderer {
     this.mats = makeMaterials();
     addStageLights(this.scene);
     buildBoardMeshes(this.scene, false);
-    this.scene.add(this.glow);
 
     // ハイライト用の板(盤の上に薄く重ねる)
     const flat = (color: number, geo: THREE.BufferGeometry, opacity: number) => {
@@ -112,8 +112,12 @@ export class GameRenderer {
     const sqGeo = new THREE.PlaneGeometry(0.98, 0.98);
     this.lastMarks = [flat(0xffdc50, sqGeo, 0.38), flat(0xffdc50, sqGeo, 0.38)];
     this.checkMark = flat(0xff3c3c, sqGeo, 0.5);
-    const disc = new THREE.CircleGeometry(0.17, 28);
-    for (let i = 0; i < MAX_TARGETS; i++) this.targetMarks.push(flat(0x50dc78, disc, 0.7));
+    const disc = new THREE.CircleGeometry(0.15, 32), halo = new THREE.CircleGeometry(0.215, 32);
+    for (let i = 0; i < MAX_TARGETS; i++) {
+      const tint = flat(0x19e08a, sqGeo, 0.26), h = flat(0x000000, halo, 0.42), dot = flat(0x19e08a, disc, 1);
+      tint.position.y = 0.010; h.position.y = 0.013; dot.position.y = 0.016;           // 重なる順(色付け → 縁取り → 点)
+      this.targetTints.push(tint); this.targetHalos.push(h); this.targetMarks.push(dot);
+    }
     this.hoverRing = flat(0x66ccff, new THREE.RingGeometry(0.4, 0.47, 40), 0.95);
     this.pieceRing = flat(0x66e0ff, new THREE.RingGeometry(0.46, 0.56, 44), 0.9);
     const thin = new THREE.RingGeometry(0.43, 0.47, 40), red = new THREE.RingGeometry(0.34, 0.44, 40);
@@ -230,11 +234,8 @@ export class GameRenderer {
       }
       this.heldObj.group.position.set(toWorldX(cur.x), HELD_LIFT, toWorldZ(cur.y));
       if (this.heldObj.type === "n") this.heldObj.group.rotation.y = this.knightYaw(this.heldObj.color, bottom, true);   // 指の間に収まる向き
-      this.glow.position.set(toWorldX(cur.x), HELD_LIFT + 0.9, toWorldZ(cur.y));
-      this.glow.intensity = 7;
     } else {
       if (this.heldObj) { this.release(this.heldObj); this.heldObj = null; }
-      this.glow.intensity = 0;
     }
 
     this.updateMarks(g, cur, now);
@@ -257,8 +258,19 @@ export class GameRenderer {
     });
     const quiet = g.held ? [...g.held.targets].filter((t) => !g.held!.captures.has(t)) : [];
     const caps = g.held ? [...g.held.captures] : [];
-    const pulse = 1 + 0.14 * Math.sin(now / 170);
-    this.targetMarks.forEach((m, i) => { if (quiet[i]) { this.place(m, quiet[i], g); m.scale.setScalar(pulse); } else m.visible = false; });
+    const pulse = 1 + 0.1 * Math.sin(now / 200);
+    this.targetMarks.forEach((m, i) => {
+      const h = this.targetHalos[i], tint = this.targetTints[i];
+      if (quiet[i]) { this.place(m, quiet[i], g); this.place(h, quiet[i], g); m.scale.setScalar(pulse); h.scale.setScalar(pulse); }
+      else { m.visible = false; h.visible = false; }
+      const sq = i < quiet.length ? quiet[i] : caps[i - quiet.length];              // 色付けは、行き先すべてに(取れるマスは赤)
+      if (sq) {
+        this.place(tint, sq, g);
+        const isCap = i >= quiet.length;
+        (tint.material as THREE.MeshBasicMaterial).color.set(isCap ? 0xff4d4d : 0x19e08a);
+        (tint.material as THREE.MeshBasicMaterial).opacity = isCap ? 0.34 : 0.26;
+      } else tint.visible = false;
+    });
     this.captureRings.forEach((m, i) => { if (caps[i]) { this.place(m, caps[i], g); m.scale.setScalar(pulse); } else m.visible = false; });
 
     const king = g.kingInCheckSquare;

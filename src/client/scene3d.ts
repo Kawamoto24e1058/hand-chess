@@ -12,8 +12,8 @@ export type PieceType = "p" | "r" | "n" | "b" | "q" | "k";
 export type SceneMode = "title" | "menu";
 
 export const UP_AXIS = new THREE.Vector3(0, 1, 0);
-const IVORY = 0xf3e6c8;
-const NAVY = 0x22254a;
+const IVORY = 0xf6f0e0;
+const NAVY = 0x131b47;
 const UP = new THREE.Vector3(0, 1, 0);
 
 // ---------- 駒 ----------
@@ -399,7 +399,7 @@ export interface StageMaterials { ivory: THREE.Material; navy: THREE.Material; s
 export function makeMaterials(): StageMaterials {
   return {
     ivory: Object.assign(new THREE.MeshStandardMaterial({ color: IVORY, roughness: 0.34, metalness: 0.06 }), { userData: { side: "w" } }),
-    navy: Object.assign(new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.28, metalness: 0.4, emissive: 0x0b0f2a, emissiveIntensity: 0.6 }), { userData: { side: "b" } }),
+    navy: Object.assign(new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.34, metalness: 0.05, emissive: 0x070c24, emissiveIntensity: 0.25 }), { userData: { side: "b" } }),
     skin: new THREE.MeshPhysicalMaterial({ color: 0xd49a7c, roughness: 0.62, metalness: 0, sheen: 0.6, sheenColor: new THREE.Color(0xff9d7e), sheenRoughness: 0.55, emissive: 0x1e0a04, emissiveIntensity: 0.3 }),
     nail: new THREE.MeshStandardMaterial({ color: 0xf0c9bb, roughness: 0.22, metalness: 0.05 }),
     cuff: new THREE.MeshStandardMaterial({ color: 0x1b2a44, roughness: 0.4, metalness: 0.3, emissive: 0x66ccff, emissiveIntensity: 0.55 }),
@@ -416,8 +416,8 @@ export function buildBoardMeshes(scene: THREE.Scene, floor: boolean) {
   const frame = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.25, 9.2), new THREE.MeshStandardMaterial({ color: 0x141a2c, roughness: 0.4, metalness: 0.5 }));
   frame.position.y = -0.14; frame.receiveShadow = true;
   scene.add(frame);
-  const light = new THREE.MeshStandardMaterial({ color: 0xc9d2e6, roughness: 0.42, metalness: 0.08 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x27345a, roughness: 0.38, metalness: 0.2 });
+  const light = new THREE.MeshStandardMaterial({ color: 0x9fb0cc, roughness: 0.5, metalness: 0.05 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x52627f, roughness: 0.5, metalness: 0.08 });
   const geo = new THREE.BoxGeometry(1, 0.08, 1);
   for (let f = 0; f < 8; f++) for (let r = 1; r <= 8; r++) {
     const m = new THREE.Mesh(geo, (f + r) % 2 ? light : dark);
